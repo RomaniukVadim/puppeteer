@@ -23,7 +23,7 @@ import {EventEmitter} from './EventEmitter.js';
 import {ExecutionContext} from './ExecutionContext.js';
 import {CDPJSHandle} from './JSHandle.js';
 import {EvaluateFunc, HandleFor} from './types.js';
-import {debugError} from './util.js';
+//import {debugError} from './util.js';
 
 /**
  * @internal
@@ -105,7 +105,8 @@ export class WebWorker extends EventEmitter {
     });
 
     // This might fail if the target is closed before we receive all execution contexts.
-    this.#client.send('Runtime.enable').catch(debugError);
+    // непотріб
+    //this.#client.send('Runtime.enable').catch(debugError);
   }
 
   /**

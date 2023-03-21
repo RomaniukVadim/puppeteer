@@ -19,7 +19,7 @@ import {Protocol} from 'devtools-protocol';
 import {assert} from '../util/assert.js';
 
 import {CDPSession} from './Connection.js';
-import {EVALUATION_SCRIPT_URL} from './ExecutionContext.js';
+//import {EVALUATION_SCRIPT_URL} from './ExecutionContext.js';
 import {addEventListener, debugError, PuppeteerEventListener} from './util.js';
 import {removeEventListeners} from './util.js';
 
@@ -263,9 +263,9 @@ export class JSCoverage {
     event: Protocol.Debugger.ScriptParsedEvent
   ): Promise<void> {
     // Ignore puppeteer-injected scripts
-    if (event.url === EVALUATION_SCRIPT_URL) {
-      return;
-    }
+    // if (event.url === EVALUATION_SCRIPT_URL) {
+    //   return;
+    // }
     // Ignore other anonymous scripts unless the reportAnonymousScripts option is true.
     if (!event.url && !this.#reportAnonymousScripts) {
       return;

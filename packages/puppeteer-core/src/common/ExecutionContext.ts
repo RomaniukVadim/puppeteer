@@ -41,8 +41,8 @@ import {
 /**
  * @public
  */
-export const EVALUATION_SCRIPT_URL = 'pptr://__puppeteer_evaluation_script__';
-const SOURCE_URL_REGEX = /^[\040\t]*\/\/[@#] sourceURL=\s*(\S*?)\s*$/m;
+//export const EVALUATION_SCRIPT_URL = 'pptr://__puppeteer_evaluation_script__';
+//const SOURCE_URL_REGEX = /^[\040\t]*\/\/[@#] sourceURL=\s*(\S*?)\s*$/m;
 
 /**
  * Represents a context for JavaScript execution.
@@ -264,18 +264,15 @@ export class ExecutionContext {
     pageFunction: Func | string,
     ...args: Params
   ): Promise<HandleFor<Awaited<ReturnType<Func>>> | Awaited<ReturnType<Func>>> {
-    const suffix = `//# sourceURL=${EVALUATION_SCRIPT_URL}`;
+   // const suffix = `//# sourceURL=${EVALUATION_SCRIPT_URL}`;
 
     if (isString(pageFunction)) {
       const contextId = this._contextId;
       const expression = pageFunction;
-      const expressionWithSourceUrl = SOURCE_URL_REGEX.test(expression)
-        ? expression
-        : expression + '\n' + suffix;
 
       const {exceptionDetails, result: remoteObject} = await this._client
         .send('Runtime.evaluate', {
-          expression: expressionWithSourceUrl,
+          expression: expression,
           contextId,
           returnByValue,
           awaitPromise: true,
@@ -297,7 +294,7 @@ export class ExecutionContext {
     let callFunctionOnPromise;
     try {
       callFunctionOnPromise = this._client.send('Runtime.callFunctionOn', {
-        functionDeclaration: `${stringifyFunction(pageFunction)}\n${suffix}\n`,
+        functionDeclaration: `${stringifyFunction(pageFunction)}\n`,
         executionContextId: this._contextId,
         arguments: await Promise.all(args.map(convertArgument.bind(this))),
         returnByValue,

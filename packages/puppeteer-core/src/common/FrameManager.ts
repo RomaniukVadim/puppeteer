@@ -22,7 +22,7 @@ import {isErrorLike} from '../util/ErrorLike.js';
 
 import {CDPSession, isTargetClosedError} from './Connection.js';
 import {EventEmitter} from './EventEmitter.js';
-import {EVALUATION_SCRIPT_URL, ExecutionContext} from './ExecutionContext.js';
+import {ExecutionContext} from './ExecutionContext.js';
 import {Frame} from './Frame.js';
 import {FrameTree} from './FrameTree.js';
 import {IsolatedWorld} from './IsolatedWorld.js';
@@ -30,7 +30,7 @@ import {MAIN_WORLD, PUPPETEER_WORLD} from './IsolatedWorlds.js';
 import {NetworkManager} from './NetworkManager.js';
 import {Target} from './Target.js';
 import {TimeoutSettings} from './TimeoutSettings.js';
-import {debugError} from './util.js';
+//import {debugError} from './util.js';
 
 const UTILITY_WORLD_NAME = '__puppeteer_utility_world__';
 
@@ -63,7 +63,7 @@ export class FrameManager extends EventEmitter {
   #networkManager: NetworkManager;
   #timeoutSettings: TimeoutSettings;
   #contextIdToContext = new Map<string, ExecutionContext>();
-  #isolatedWorlds = new Set<string>();
+  //#isolatedWorlds = new Set<string>();
   #client: CDPSession;
   /**
    * @internal
@@ -154,9 +154,10 @@ export class FrameManager extends EventEmitter {
       this.#handleFrameTree(client, frameTree);
       await Promise.all([
         client.send('Page.setLifecycleEventsEnabled', {enabled: true}),
-        client.send('Runtime.enable').then(() => {
-          return this.#createIsolatedWorld(client, UTILITY_WORLD_NAME);
-        }),
+        // Bet365 палить нас по runtime.enable
+        // client.send('Runtime.enable').then(() => {
+        //   return this.#createIsolatedWorld(client, UTILITY_WORLD_NAME);
+        // }),
         // TODO: Network manager is not aware of OOP iframes yet.
         client === this.#client
           ? this.#networkManager.initialize()
@@ -323,38 +324,38 @@ export class FrameManager extends EventEmitter {
     this.emit(FrameManagerEmittedEvents.FrameNavigated, frame);
   }
 
-  async #createIsolatedWorld(session: CDPSession, name: string): Promise<void> {
-    const key = `${session.id()}:${name}`;
+  // async #createIsolatedWorld(session: CDPSession, name: string): Promise<void> {
+  //   const key = `${session.id()}:${name}`;
 
-    if (this.#isolatedWorlds.has(key)) {
-      return;
-    }
+  //   if (this.#isolatedWorlds.has(key)) {
+  //     return;
+  //   }
+  //   // По цьому bet365 теж палить
+  //   // await session.send('Page.addScriptToEvaluateOnNewDocument', {
+  //   //   source: `//# sourceURL=${EVALUATION_SCRIPT_URL}`,
+  //   //   worldName: name,
+  //   // });
 
-    await session.send('Page.addScriptToEvaluateOnNewDocument', {
-      source: `//# sourceURL=${EVALUATION_SCRIPT_URL}`,
-      worldName: name,
-    });
+  //   await Promise.all(
+  //     this.frames()
+  //       .filter(frame => {
+  //         return frame._client() === session;
+  //       })
+  //       .map(frame => {
+  //         // Frames might be removed before we send this, so we don't want to
+  //         // throw an error.
+  //         return session
+  //           // .send('Page.createIsolatedWorld', {
+  //           //   frameId: frame._id,
+  //           //   worldName: name,
+  //           //   grantUniveralAccess: true,
+  //           // })
+  //           // .catch(debugError);
+  //       })
+  //   );
 
-    await Promise.all(
-      this.frames()
-        .filter(frame => {
-          return frame._client() === session;
-        })
-        .map(frame => {
-          // Frames might be removed before we send this, so we don't want to
-          // throw an error.
-          return session
-            .send('Page.createIsolatedWorld', {
-              frameId: frame._id,
-              worldName: name,
-              grantUniveralAccess: true,
-            })
-            .catch(debugError);
-        })
-    );
-
-    this.#isolatedWorlds.add(key);
-  }
+  //   this.#isolatedWorlds.add(key);
+  // }
 
   #onFrameNavigatedWithinDocument(frameId: string, url: string): void {
     const frame = this.frame(frameId);

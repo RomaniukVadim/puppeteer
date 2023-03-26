@@ -305,8 +305,8 @@ export class CDPPage extends Page {
     try {
       await Promise.all([
         this.#frameManager.initialize(),
-        //this.#client.send('Performance.enable'),
-        //this.#client.send('Log.enable'),
+        this.#client.send('Performance.enable'),
+        this.#client.send('Log.enable'),
       ]);
     } catch (err) {
       if (isErrorLike(err) && isTargetClosedError(err)) {

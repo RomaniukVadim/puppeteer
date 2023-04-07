@@ -152,16 +152,16 @@ export class FrameManager extends EventEmitter {
 
       const {frameTree} = result[1];
       this.#handleFrameTree(client, frameTree);
-      await Promise.all([
-        client.send('Page.setLifecycleEventsEnabled', {enabled: true}),
-        client.send('Runtime.enable').then(() => {
-          return this.#createIsolatedWorld(client, UTILITY_WORLD_NAME);
-        }),
-        // TODO: Network manager is not aware of OOP iframes yet.
-        client === this.#client
-          ? this.#networkManager.initialize()
-          : Promise.resolve(),
-      ]);
+       await Promise.all([
+          client.send('Page.setLifecycleEventsEnabled', {enabled: true}),
+          // client.send('Runtime.enable').then(() => {
+          /* return*/ this.#createIsolatedWorld(client, UTILITY_WORLD_NAME),
+          // }),
+          // TODO: Network manager is not aware of OOP iframes yet.
+          client === this.#client
+            ? this.#networkManager.initialize()
+            : Promise.resolve(),
+        ]);
     } catch (error) {
       // The target might have been closed before the initialization finished.
       if (isErrorLike(error) && isTargetClosedError(error)) {

@@ -22,8 +22,6 @@ import {EvaluateFuncWith, HandleFor, HandleOr} from '../common/types.js';
 
 import {ElementHandle} from './ElementHandle.js';
 
-declare const __JSHandleSymbol: unique symbol;
-
 /**
  * Represents a reference to a JavaScript object. Instances can be created using
  * {@link Page.evaluateHandle}.
@@ -49,7 +47,7 @@ export class JSHandle<T = unknown> {
   /**
    * Used for nominally typing {@link JSHandle}.
    */
-  [__JSHandleSymbol]?: T;
+  declare _?: T;
 
   /**
    * @internal
@@ -82,7 +80,7 @@ export class JSHandle<T = unknown> {
    */
   async evaluate<
     Params extends unknown[],
-    Func extends EvaluateFuncWith<T, Params> = EvaluateFuncWith<T, Params>
+    Func extends EvaluateFuncWith<T, Params> = EvaluateFuncWith<T, Params>,
   >(
     pageFunction: Func | string,
     ...args: Params
@@ -97,7 +95,7 @@ export class JSHandle<T = unknown> {
    */
   async evaluateHandle<
     Params extends unknown[],
-    Func extends EvaluateFuncWith<T, Params> = EvaluateFuncWith<T, Params>
+    Func extends EvaluateFuncWith<T, Params> = EvaluateFuncWith<T, Params>,
   >(
     pageFunction: Func | string,
     ...args: Params
@@ -143,7 +141,7 @@ export class JSHandle<T = unknown> {
   }
 
   /**
-   * @returns A vanilla object representing the serializable portions of the
+   * A vanilla object representing the serializable portions of the
    * referenced object.
    * @throws Throws if the object cannot be serialized due to circularity.
    *
@@ -155,7 +153,7 @@ export class JSHandle<T = unknown> {
   }
 
   /**
-   * @returns Either `null` or the handle itself if the handle is an
+   * Either `null` or the handle itself if the handle is an
    * instance of {@link ElementHandle}.
    */
   asElement(): ElementHandle<Node> | null {
@@ -188,7 +186,7 @@ export class JSHandle<T = unknown> {
 
   /**
    * Provides access to the
-   * [Protocol.Runtime.RemoteObject](https://chromedevtools.github.io/devtools-protocol/tot/Runtime/#type-RemoteObject)
+   * {@link https://chromedevtools.github.io/devtools-protocol/tot/Runtime/#type-RemoteObject | Protocol.Runtime.RemoteObject}
    * backing this handle.
    */
   remoteObject(): Protocol.Runtime.RemoteObject {

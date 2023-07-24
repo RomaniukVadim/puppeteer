@@ -19,16 +19,21 @@ import * as firefox from './firefox.js';
 
 /**
  * Supported browsers.
+ *
+ * @public
  */
 export enum Browser {
   CHROME = 'chrome',
   CHROMIUM = 'chromium',
   FIREFOX = 'firefox',
+  CHROMEDRIVER = 'chromedriver',
 }
 
 /**
  * Platform names used to identify a OS platfrom x architecture combination in the way
  * that is relevant for the browser download.
+ *
+ * @public
  */
 export enum BrowserPlatform {
   LINUX = 'linux',
@@ -44,15 +49,28 @@ export const downloadUrls = {
   [Browser.FIREFOX]: firefox.resolveDownloadUrl,
 };
 
+/**
+ * @public
+ */
 export enum BrowserTag {
+  CANARY = 'canary',
+  BETA = 'beta',
+  DEV = 'dev',
+  STABLE = 'stable',
   LATEST = 'latest',
 }
 
+/**
+ * @public
+ */
 export interface ProfileOptions {
   preferences: Record<string, unknown>;
   path: string;
 }
 
+/**
+ * @public
+ */
 export enum ChromeReleaseChannel {
   STABLE = 'stable',
   DEV = 'dev',

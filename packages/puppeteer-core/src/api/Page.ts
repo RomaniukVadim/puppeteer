@@ -21,30 +21,29 @@ import {Protocol} from 'devtools-protocol';
 import type {HTTPRequest} from '../api/HTTPRequest.js';
 import type {HTTPResponse} from '../api/HTTPResponse.js';
 import type {Accessibility} from '../common/Accessibility.js';
+import type {CDPSession} from '../common/Connection.js';
 import type {ConsoleMessage} from '../common/ConsoleMessage.js';
 import type {Coverage} from '../common/Coverage.js';
 import {Device} from '../common/Device.js';
+import {DeviceRequestPrompt} from '../common/DeviceRequestPrompt.js';
 import type {Dialog} from '../common/Dialog.js';
+import {TargetCloseError} from '../common/Errors.js';
 import {EventEmitter, Handler} from '../common/EventEmitter.js';
 import type {FileChooser} from '../common/FileChooser.js';
-import type {
-  Frame,
-  FrameAddScriptTagOptions,
-  FrameAddStyleTagOptions,
-  FrameWaitForFunctionOptions,
-} from '../common/Frame.js';
-import type {
-  Keyboard,
-  Mouse,
-  MouseButton,
-  Touchscreen,
-} from '../common/Input.js';
 import type {WaitForSelectorOptions} from '../common/IsolatedWorld.js';
 import type {PuppeteerLifeCycleEvent} from '../common/LifecycleWatcher.js';
-import type {Credentials, NetworkConditions} from '../common/NetworkManager.js';
-import type {PDFOptions} from '../common/PDFOptions.js';
+import {
+  Credentials,
+  NetworkConditions,
+  NetworkManagerEmittedEvents,
+} from '../common/NetworkManager.js';
+import {
+  LowerCasePaperFormat,
+  paperFormats,
+  ParsedPDFOptions,
+  PDFOptions,
+} from '../common/PDFOptions.js';
 import type {Viewport} from '../common/PuppeteerViewport.js';
-import type {Target} from '../common/Target.js';
 import type {Tracing} from '../common/Tracing.js';
 import type {
   EvaluateFunc,
@@ -52,12 +51,30 @@ import type {
   HandleFor,
   NodeFor,
 } from '../common/types.js';
+import {
+  importFSPromises,
+  isNumber,
+  isString,
+  waitForEvent,
+  withSourcePuppeteerURLIfNone,
+} from '../common/util.js';
 import type {WebWorker} from '../common/WebWorker.js';
+import {assert} from '../util/assert.js';
+import {Deferred} from '../util/Deferred.js';
 
 import type {Browser} from './Browser.js';
 import type {BrowserContext} from './BrowserContext.js';
-import type {ElementHandle} from './ElementHandle.js';
+import type {ClickOptions, ElementHandle} from './ElementHandle.js';
+import type {
+  Frame,
+  FrameAddScriptTagOptions,
+  FrameAddStyleTagOptions,
+  FrameWaitForFunctionOptions,
+} from './Frame.js';
+import {Keyboard, KeyboardTypeOptions, Mouse, Touchscreen} from './Input.js';
 import type {JSHandle} from './JSHandle.js';
+import {Locator, NodeLocator, UnionLocatorOf} from './locators/locators.js';
+import type {Target} from './Target.js';
 
 /**
  * @public
@@ -145,7 +162,7 @@ export interface ScreenshotClip {
   width: number;
   height: number;
   /**
-   * @defaultValue 1
+   * @defaultValue `1`
    */
   scale?: number;
 }
@@ -154,6 +171,10 @@ export interface ScreenshotClip {
  * @public
  */
 export interface ScreenshotOptions {
+  /**
+   * @defaultValue `false`
+   */
+  optimizeForSpeed?: boolean;
   /**
    * @defaultValue `png`
    */
@@ -208,7 +229,6 @@ export interface ScreenshotOptions {
 export const enum PageEmittedEvents {
   /**
    * Emitted when the page closes.
-   * @eventProperty
    */
   Close = 'close',
   /**
@@ -384,9 +404,16 @@ export interface PageEventObject {
 }
 
 /**
+ * @public
+ */
+export interface NewDocumentScriptEvaluation {
+  identifier: string;
+}
+
+/**
  * Page provides methods to interact with a single tab or
  * {@link https://developer.chrome.com/extensions/background_pages | extension background page}
- * in Chromium.
+ * in the browser.
  *
  * :::note
  *
@@ -443,14 +470,21 @@ export class Page extends EventEmitter {
   }
 
   /**
-   * @returns `true` if drag events are being intercepted, `false` otherwise.
+   * `true` if the service worker are being bypassed, `false` otherwise.
+   */
+  isServiceWorkerBypassed(): boolean {
+    throw new Error('Not implemented');
+  }
+
+  /**
+   * `true` if drag events are being intercepted, `false` otherwise.
    */
   isDragInterceptionEnabled(): boolean {
     throw new Error('Not implemented');
   }
 
   /**
-   * @returns `true` if the page has JavaScript enabled, `false` otherwise.
+   * `true` if the page has JavaScript enabled, `false` otherwise.
    */
   isJavaScriptEnabled(): boolean {
     throw new Error('Not implemented');
@@ -470,7 +504,7 @@ export class Page extends EventEmitter {
   override on<K extends keyof PageEventObject>(
     eventName: K,
     handler: (event: PageEventObject[K]) => void
-  ): EventEmitter {
+  ): this {
     if (eventName === 'request') {
       const wrap =
         this.#handlerMap.get(handler) ||
@@ -490,7 +524,7 @@ export class Page extends EventEmitter {
   override once<K extends keyof PageEventObject>(
     eventName: K,
     handler: (event: PageEventObject[K]) => void
-  ): EventEmitter {
+  ): this {
     // Note: this method only exists to define the types; we delegate the impl
     // to EventEmitter.
     return super.once(eventName, handler);
@@ -499,7 +533,7 @@ export class Page extends EventEmitter {
   override off<K extends keyof PageEventObject>(
     eventName: K,
     handler: (event: PageEventObject[K]) => void
-  ): EventEmitter {
+  ): this {
     if (eventName === 'request') {
       handler = this.#handlerMap.get(handler) || handler;
     }
@@ -519,7 +553,7 @@ export class Page extends EventEmitter {
    * :::
    *
    * @remarks
-   * In non-headless Chromium, this method results in the native file picker
+   * In the "headful" browser, this method results in the native file picker
    * dialog `not showing up` for the user.
    *
    * @example
@@ -559,7 +593,7 @@ export class Page extends EventEmitter {
   }
 
   /**
-   * @returns A target this page was created from.
+   * A target this page was created from.
    */
   target(): Target {
     throw new Error('Not implemented');
@@ -580,7 +614,7 @@ export class Page extends EventEmitter {
   }
 
   /**
-   * @returns The page's main frame.
+   * The page's main frame.
    *
    * @remarks
    * Page is guaranteed to have a main frame which persists during navigations.
@@ -589,35 +623,57 @@ export class Page extends EventEmitter {
     throw new Error('Not implemented');
   }
 
+  /**
+   * Creates a Chrome Devtools Protocol session attached to the page.
+   */
+  createCDPSession(): Promise<CDPSession> {
+    throw new Error('Not implemented');
+  }
+
+  /**
+   * {@inheritDoc Keyboard}
+   */
   get keyboard(): Keyboard {
     throw new Error('Not implemented');
   }
 
+  /**
+   * {@inheritDoc Touchscreen}
+   */
   get touchscreen(): Touchscreen {
     throw new Error('Not implemented');
   }
 
+  /**
+   * {@inheritDoc Coverage}
+   */
   get coverage(): Coverage {
     throw new Error('Not implemented');
   }
 
+  /**
+   * {@inheritDoc Tracing}
+   */
   get tracing(): Tracing {
     throw new Error('Not implemented');
   }
 
+  /**
+   * {@inheritDoc Accessibility}
+   */
   get accessibility(): Accessibility {
     throw new Error('Not implemented');
   }
 
   /**
-   * @returns An array of all frames attached to the page.
+   * An array of all frames attached to the page.
    */
   frames(): Frame[] {
     throw new Error('Not implemented');
   }
 
   /**
-   * @returns all of the dedicated {@link
+   * All of the dedicated {@link
    * https://developer.mozilla.org/en-US/docs/Web/API/Web_Workers_API |
    * WebWorkers} associated with the page.
    *
@@ -666,6 +722,16 @@ export class Page extends EventEmitter {
    */
   async setRequestInterception(value: boolean): Promise<void>;
   async setRequestInterception(): Promise<void> {
+    throw new Error('Not implemented');
+  }
+
+  /**
+   * Toggles ignoring of service worker for each request.
+   *
+   * @param bypass - Whether to bypass service worker and load from network.
+   */
+  async setBypassServiceWorker(bypass: boolean): Promise<void>;
+  async setBypassServiceWorker(): Promise<void> {
     throw new Error('Not implemented');
   }
 
@@ -759,10 +825,35 @@ export class Page extends EventEmitter {
   }
 
   /**
-   * @returns Maximum time in milliseconds.
+   * Maximum time in milliseconds.
    */
   getDefaultTimeout(): number {
     throw new Error('Not implemented');
+  }
+
+  /**
+   * Creates a locator for the provided `selector`. See {@link Locator} for
+   * details and supported actions.
+   *
+   * @remarks
+   * Locators API is experimental and we will not follow semver for breaking
+   * change in the Locators API.
+   */
+  locator<Selector extends string>(
+    selector: Selector
+  ): Locator<NodeFor<Selector>> {
+    return NodeLocator.create(this, selector);
+  }
+
+  /**
+   * A shortcut for {@link Locator.race} that does not require static imports.
+   *
+   * @internal
+   */
+  locatorRace<Locators extends Array<Locator<unknown>>>(
+    locators: Locators
+  ): Locator<UnionLocatorOf<Locators>> {
+    return Locator.race(locators as Array<Locator<UnionLocatorOf<Locators>>>);
   }
 
   /**
@@ -775,11 +866,8 @@ export class Page extends EventEmitter {
    */
   async $<Selector extends string>(
     selector: Selector
-  ): Promise<ElementHandle<NodeFor<Selector>> | null>;
-  async $<Selector extends string>(): Promise<ElementHandle<
-    NodeFor<Selector>
-  > | null> {
-    throw new Error('Not implemented');
+  ): Promise<ElementHandle<NodeFor<Selector>> | null> {
+    return this.mainFrame().$(selector);
   }
 
   /**
@@ -791,11 +879,8 @@ export class Page extends EventEmitter {
    */
   async $$<Selector extends string>(
     selector: Selector
-  ): Promise<Array<ElementHandle<NodeFor<Selector>>>>;
-  async $$<Selector extends string>(): Promise<
-    Array<ElementHandle<NodeFor<Selector>>>
-  > {
-    throw new Error('Not implemented');
+  ): Promise<Array<ElementHandle<NodeFor<Selector>>>> {
+    return this.mainFrame().$$(selector);
   }
 
   /**
@@ -857,14 +942,14 @@ export class Page extends EventEmitter {
    */
   async evaluateHandle<
     Params extends unknown[],
-    Func extends EvaluateFunc<Params> = EvaluateFunc<Params>
+    Func extends EvaluateFunc<Params> = EvaluateFunc<Params>,
   >(
     pageFunction: Func | string,
     ...args: Params
   ): Promise<HandleFor<Awaited<ReturnType<Func>>>>;
   async evaluateHandle<
     Params extends unknown[],
-    Func extends EvaluateFunc<Params> = EvaluateFunc<Params>
+    Func extends EvaluateFunc<Params> = EvaluateFunc<Params>,
   >(): Promise<HandleFor<Awaited<ReturnType<Func>>>> {
     throw new Error('Not implemented');
   }
@@ -967,14 +1052,14 @@ export class Page extends EventEmitter {
     Func extends EvaluateFuncWith<NodeFor<Selector>, Params> = EvaluateFuncWith<
       NodeFor<Selector>,
       Params
-    >
+    >,
   >(
     selector: Selector,
     pageFunction: Func | string,
     ...args: Params
-  ): Promise<Awaited<ReturnType<Func>>>;
-  async $eval(): Promise<unknown> {
-    throw new Error('Not implemented');
+  ): Promise<Awaited<ReturnType<Func>>> {
+    pageFunction = withSourcePuppeteerURLIfNone(this.$eval.name, pageFunction);
+    return this.mainFrame().$eval(selector, pageFunction, ...args);
   }
 
   /**
@@ -1045,14 +1130,14 @@ export class Page extends EventEmitter {
     Func extends EvaluateFuncWith<
       Array<NodeFor<Selector>>,
       Params
-    > = EvaluateFuncWith<Array<NodeFor<Selector>>, Params>
+    > = EvaluateFuncWith<Array<NodeFor<Selector>>, Params>,
   >(
     selector: Selector,
     pageFunction: Func | string,
     ...args: Params
-  ): Promise<Awaited<ReturnType<Func>>>;
-  async $$eval(): Promise<unknown> {
-    throw new Error('Not implemented');
+  ): Promise<Awaited<ReturnType<Func>>> {
+    pageFunction = withSourcePuppeteerURLIfNone(this.$$eval.name, pageFunction);
+    return this.mainFrame().$$eval(selector, pageFunction, ...args);
   }
 
   /**
@@ -1065,9 +1150,8 @@ export class Page extends EventEmitter {
    *
    * @param expression - Expression to evaluate
    */
-  async $x(expression: string): Promise<Array<ElementHandle<Node>>>;
-  async $x(): Promise<Array<ElementHandle<Node>>> {
-    throw new Error('Not implemented');
+  async $x(expression: string): Promise<Array<ElementHandle<Node>>> {
+    return this.mainFrame().$x(expression);
   }
 
   /**
@@ -1111,9 +1195,8 @@ export class Page extends EventEmitter {
    */
   async addScriptTag(
     options: FrameAddScriptTagOptions
-  ): Promise<ElementHandle<HTMLScriptElement>>;
-  async addScriptTag(): Promise<ElementHandle<HTMLScriptElement>> {
-    throw new Error('Not implemented');
+  ): Promise<ElementHandle<HTMLScriptElement>> {
+    return this.mainFrame().addScriptTag(options);
   }
 
   /**
@@ -1134,11 +1217,8 @@ export class Page extends EventEmitter {
   ): Promise<ElementHandle<HTMLLinkElement>>;
   async addStyleTag(
     options: FrameAddStyleTagOptions
-  ): Promise<ElementHandle<HTMLStyleElement | HTMLLinkElement>>;
-  async addStyleTag(): Promise<
-    ElementHandle<HTMLStyleElement | HTMLLinkElement>
-  > {
-    throw new Error('Not implemented');
+  ): Promise<ElementHandle<HTMLStyleElement | HTMLLinkElement>> {
+    return this.mainFrame().addStyleTag(options);
   }
 
   /**
@@ -1220,6 +1300,15 @@ export class Page extends EventEmitter {
   }
 
   /**
+   * The method removes a previously added function via ${@link Page.exposeFunction}
+   * called `name` from the page's `window` object.
+   */
+  async removeExposedFunction(name: string): Promise<void>;
+  async removeExposedFunction(): Promise<void> {
+    throw new Error('Not implemented');
+  }
+
+  /**
    * Provide credentials for `HTTP authentication`.
    *
    * @remarks
@@ -1270,7 +1359,9 @@ export class Page extends EventEmitter {
   }
 
   /**
-   * @returns Object containing metrics as key/value pairs.
+   * Object containing metrics as key/value pairs.
+   *
+   * @returns
    *
    * - `Timestamp` : The timestamp when the metrics sample was taken.
    *
@@ -1308,8 +1399,7 @@ export class Page extends EventEmitter {
   }
 
   /**
-   *
-   * @returns
+   * The page's URL.
    * @remarks Shortcut for
    * {@link Frame.url | page.mainFrame().url()}.
    */
@@ -1317,11 +1407,16 @@ export class Page extends EventEmitter {
     throw new Error('Not implemented');
   }
 
+  /**
+   * The full HTML contents of the page, including the DOCTYPE.
+   */
   async content(): Promise<string> {
     throw new Error('Not implemented');
   }
 
   /**
+   * Set the content of the page.
+   *
    * @param html - HTML markup to assign to the page.
    * @param options - Parameters that has some properties.
    * @remarks
@@ -1474,10 +1569,9 @@ export class Page extends EventEmitter {
    *   API usage, the navigation will resolve with `null`.
    */
   async waitForNavigation(
-    options?: WaitForOptions
-  ): Promise<HTTPResponse | null>;
-  async waitForNavigation(): Promise<HTTPResponse | null> {
-    throw new Error('Not implemented');
+    options: WaitForOptions = {}
+  ): Promise<HTTPResponse | null> {
+    return await this.mainFrame().waitForNavigation(options);
   }
 
   /**
@@ -1558,6 +1652,73 @@ export class Page extends EventEmitter {
   }): Promise<void>;
   async waitForNetworkIdle(): Promise<void> {
     throw new Error('Not implemented');
+  }
+
+  /**
+   * @internal
+   */
+  protected async _waitForNetworkIdle(
+    networkManager: EventEmitter & {
+      inFlightRequestsCount: () => number;
+    },
+    idleTime: number,
+    timeout: number,
+    closedDeferred: Deferred<TargetCloseError>
+  ): Promise<void> {
+    const idleDeferred = Deferred.create<void>();
+    const abortDeferred = Deferred.create<Error>();
+
+    let idleTimer: NodeJS.Timeout | undefined;
+    const cleanup = () => {
+      clearTimeout(idleTimer);
+      abortDeferred.reject(new Error('abort'));
+    };
+
+    const evaluate = () => {
+      clearTimeout(idleTimer);
+
+      if (networkManager.inFlightRequestsCount() === 0) {
+        idleTimer = setTimeout(() => {
+          return idleDeferred.resolve();
+        }, idleTime);
+      }
+    };
+
+    const listenToEvent = (event: symbol) => {
+      return waitForEvent(
+        networkManager,
+        event,
+        () => {
+          evaluate();
+          return false;
+        },
+        timeout,
+        abortDeferred
+      );
+    };
+
+    const eventPromises = [
+      listenToEvent(NetworkManagerEmittedEvents.Request),
+      listenToEvent(NetworkManagerEmittedEvents.Response),
+      listenToEvent(NetworkManagerEmittedEvents.RequestFailed),
+    ];
+
+    evaluate();
+
+    // We don't want to reject the closed deferred when
+    // the race if finished so we pass the Promise instead
+    const closedPromise = closedDeferred.valueOrThrow();
+
+    await Deferred.race([idleDeferred, ...eventPromises, closedPromise]).then(
+      r => {
+        cleanup();
+        return r;
+      },
+      error => {
+        cleanup();
+        throw error;
+      }
+    );
   }
 
   /**
@@ -1941,6 +2102,8 @@ export class Page extends EventEmitter {
   }
 
   /**
+   * Current page viewport settings.
+   *
    * @returns
    *
    * - `width`: page's width in pixels
@@ -1966,7 +2129,7 @@ export class Page extends EventEmitter {
   /**
    * Evaluates a function in the page's context and returns the result.
    *
-   * If the function passed to `page.evaluateHandle` returns a Promise, the
+   * If the function passed to `page.evaluate` returns a Promise, the
    * function will wait for the promise to resolve and return its value.
    *
    * @example
@@ -2012,14 +2175,14 @@ export class Page extends EventEmitter {
    */
   async evaluate<
     Params extends unknown[],
-    Func extends EvaluateFunc<Params> = EvaluateFunc<Params>
+    Func extends EvaluateFunc<Params> = EvaluateFunc<Params>,
   >(
     pageFunction: Func | string,
     ...args: Params
   ): Promise<Awaited<ReturnType<Func>>>;
   async evaluate<
     Params extends unknown[],
-    Func extends EvaluateFunc<Params> = EvaluateFunc<Params>
+    Func extends EvaluateFunc<Params> = EvaluateFunc<Params>,
   >(): Promise<Awaited<ReturnType<Func>>> {
     throw new Error('Not implemented');
   }
@@ -2058,9 +2221,22 @@ export class Page extends EventEmitter {
    */
   async evaluateOnNewDocument<
     Params extends unknown[],
-    Func extends (...args: Params) => unknown = (...args: Params) => unknown
-  >(pageFunction: Func | string, ...args: Params): Promise<void>;
-  async evaluateOnNewDocument(): Promise<void> {
+    Func extends (...args: Params) => unknown = (...args: Params) => unknown,
+  >(
+    pageFunction: Func | string,
+    ...args: Params
+  ): Promise<NewDocumentScriptEvaluation>;
+  async evaluateOnNewDocument(): Promise<NewDocumentScriptEvaluation> {
+    throw new Error('Not implemented');
+  }
+
+  /**
+   * Removes script that injected into page by Page.evaluateOnNewDocument.
+   *
+   * @param identifier - script identifier
+   */
+  async removeScriptToEvaluateOnNewDocument(identifier: string): Promise<void>;
+  async removeScriptToEvaluateOnNewDocument(): Promise<void> {
     throw new Error('Not implemented');
   }
 
@@ -2068,7 +2244,7 @@ export class Page extends EventEmitter {
    * Toggles ignoring cache for each request based on the enabled state. By
    * default, caching is enabled.
    * @param enabled - sets the `enabled` state of cache
-   * @defaultValue true
+   * @defaultValue `true`
    */
   async setCacheEnabled(enabled?: boolean): Promise<void>;
   async setCacheEnabled(): Promise<void> {
@@ -2076,6 +2252,24 @@ export class Page extends EventEmitter {
   }
 
   /**
+   * @internal
+   */
+  async _maybeWriteBufferToFile(
+    path: string | undefined,
+    buffer: Buffer
+  ): Promise<void> {
+    if (!path) {
+      return;
+    }
+
+    const fs = await importFSPromises();
+
+    await fs.writeFile(path, buffer);
+  }
+
+  /**
+   * Captures screenshot of the current page.
+   *
    * @remarks
    * Options object which might have the following properties:
    *
@@ -2086,7 +2280,7 @@ export class Page extends EventEmitter {
    *   | current working directory}.
    *   If no path is provided, the image won't be saved to the disk.
    *
-   * - `type` : Specify screenshot type, can be either `jpeg` or `png`.
+   * - `type` : Specify screenshot type, can be `jpeg`, `png` or `webp`.
    *   Defaults to 'png'.
    *
    * - `quality` : The quality of the image, between 0-100. Not
@@ -2119,8 +2313,6 @@ export class Page extends EventEmitter {
    *   headful mode and ignores page viewport (but not browser window's
    *   bounds). Defaults to `true`.
    *
-   * NOTE: Screenshots take at least 1/6 second on OS X. See
-   * {@link https://crbug.com/741689} for discussion.
    * @returns Promise which resolves to buffer or a base64 string (depending on
    * the value of `encoding`) with captured screenshot.
    */
@@ -2136,10 +2328,63 @@ export class Page extends EventEmitter {
   }
 
   /**
+   * @internal
+   */
+  _getPDFOptions(
+    options: PDFOptions = {},
+    lengthUnit: 'in' | 'cm' = 'in'
+  ): ParsedPDFOptions {
+    const defaults = {
+      scale: 1,
+      displayHeaderFooter: false,
+      headerTemplate: '',
+      footerTemplate: '',
+      printBackground: false,
+      landscape: false,
+      pageRanges: '',
+      preferCSSPageSize: false,
+      omitBackground: false,
+      timeout: 30000,
+    };
+
+    let width = 8.5;
+    let height = 11;
+    if (options.format) {
+      const format =
+        paperFormats[options.format.toLowerCase() as LowerCasePaperFormat];
+      assert(format, 'Unknown paper format: ' + options.format);
+      width = format.width;
+      height = format.height;
+    } else {
+      width = convertPrintParameterToInches(options.width, lengthUnit) ?? width;
+      height =
+        convertPrintParameterToInches(options.height, lengthUnit) ?? height;
+    }
+
+    const margin = {
+      top: convertPrintParameterToInches(options.margin?.top, lengthUnit) || 0,
+      left:
+        convertPrintParameterToInches(options.margin?.left, lengthUnit) || 0,
+      bottom:
+        convertPrintParameterToInches(options.margin?.bottom, lengthUnit) || 0,
+      right:
+        convertPrintParameterToInches(options.margin?.right, lengthUnit) || 0,
+    };
+
+    const output = {
+      ...defaults,
+      ...options,
+      width,
+      height,
+      margin,
+    };
+
+    return output;
+  }
+
+  /**
    * Generates a PDF of the page with the `print` CSS media type.
    * @remarks
-   *
-   * NOTE: PDF generation is only supported in Chrome headless mode.
    *
    * To generate a PDF with the `screen` media type, call
    * {@link Page.emulateMediaType | `page.emulateMediaType('screen')`} before
@@ -2158,8 +2403,7 @@ export class Page extends EventEmitter {
   }
 
   /**
-   * @param options -
-   * @returns
+   * {@inheritDoc Page.createPDFStream}
    */
   async pdf(options?: PDFOptions): Promise<Buffer>;
   async pdf(): Promise<Buffer> {
@@ -2167,7 +2411,8 @@ export class Page extends EventEmitter {
   }
 
   /**
-   * @returns The page's title
+   * The page's title
+   *
    * @remarks
    * Shortcut for {@link Frame.title | page.mainFrame().title()}.
    */
@@ -2188,13 +2433,16 @@ export class Page extends EventEmitter {
     throw new Error('Not implemented');
   }
 
+  /**
+   * {@inheritDoc Mouse}
+   */
   get mouse(): Mouse {
     throw new Error('Not implemented');
   }
 
   /**
    * This method fetches an element with `selector`, scrolls it into view if
-   * needed, and then uses {@link Page.mouse} to click in the center of the
+   * needed, and then uses {@link Page | Page.mouse} to click in the center of the
    * element. If there's no element matching `selector`, the method throws an
    * error.
    * @remarks Bear in mind that if `click()` triggers a navigation event and
@@ -2217,16 +2465,8 @@ export class Page extends EventEmitter {
    * successfully clicked. The Promise will be rejected if there is no element
    * matching `selector`.
    */
-  click(
-    selector: string,
-    options?: {
-      delay?: number;
-      button?: MouseButton;
-      clickCount?: number;
-    }
-  ): Promise<void>;
-  click(): Promise<void> {
-    throw new Error('Not implemented');
+  click(selector: string, options?: Readonly<ClickOptions>): Promise<void> {
+    return this.mainFrame().click(selector, options);
   }
 
   /**
@@ -2242,14 +2482,14 @@ export class Page extends EventEmitter {
    * @remarks
    * Shortcut for {@link Frame.focus | page.mainFrame().focus(selector)}.
    */
-  focus(selector: string): Promise<void>;
-  focus(): Promise<void> {
-    throw new Error('Not implemented');
+  focus(selector: string): Promise<void> {
+    return this.mainFrame().focus(selector);
   }
 
   /**
    * This method fetches an element with `selector`, scrolls it into view if
-   * needed, and then uses {@link Page.mouse} to hover over the center of the element.
+   * needed, and then uses {@link Page | Page.mouse}
+   * to hover over the center of the element.
    * If there's no element matching `selector`, the method throws an error.
    * @param selector - A
    * {@link https://developer.mozilla.org/en-US/docs/Web/CSS/CSS_Selectors | selector}
@@ -2261,9 +2501,8 @@ export class Page extends EventEmitter {
    * @remarks
    * Shortcut for {@link Page.hover | page.mainFrame().hover(selector)}.
    */
-  hover(selector: string): Promise<void>;
-  hover(): Promise<void> {
-    throw new Error('Not implemented');
+  hover(selector: string): Promise<void> {
+    return this.mainFrame().hover(selector);
   }
 
   /**
@@ -2289,14 +2528,14 @@ export class Page extends EventEmitter {
    * @remarks
    * Shortcut for {@link Frame.select | page.mainFrame().select()}
    */
-  select(selector: string, ...values: string[]): Promise<string[]>;
-  select(): Promise<string[]> {
-    throw new Error('Not implemented');
+  select(selector: string, ...values: string[]): Promise<string[]> {
+    return this.mainFrame().select(selector, ...values);
   }
 
   /**
    * This method fetches an element with `selector`, scrolls it into view if
-   * needed, and then uses {@link Page.touchscreen} to tap in the center of the element.
+   * needed, and then uses {@link Page | Page.touchscreen}
+   * to tap in the center of the element.
    * If there's no element matching `selector`, the method throws an error.
    * @param selector - A
    * {@link https://developer.mozilla.org/en-US/docs/Web/CSS/CSS_Selectors | Selector}
@@ -2306,9 +2545,8 @@ export class Page extends EventEmitter {
    * @remarks
    * Shortcut for {@link Frame.tap | page.mainFrame().tap(selector)}.
    */
-  tap(selector: string): Promise<void>;
-  tap(): Promise<void> {
-    throw new Error('Not implemented');
+  tap(selector: string): Promise<void> {
+    return this.mainFrame().tap(selector);
   }
 
   /**
@@ -2338,10 +2576,9 @@ export class Page extends EventEmitter {
   type(
     selector: string,
     text: string,
-    options?: {delay: number}
-  ): Promise<void>;
-  type(): Promise<void> {
-    throw new Error('Not implemented');
+    options?: Readonly<KeyboardTypeOptions>
+  ): Promise<void> {
+    return this.mainFrame().type(selector, text, options);
   }
 
   /**
@@ -2364,9 +2601,8 @@ export class Page extends EventEmitter {
    *
    * @param milliseconds - the number of milliseconds to wait.
    */
-  waitForTimeout(milliseconds: number): Promise<void>;
-  waitForTimeout(): Promise<void> {
-    throw new Error('Not implemented');
+  waitForTimeout(milliseconds: number): Promise<void> {
+    return this.mainFrame().waitForTimeout(milliseconds);
   }
 
   /**
@@ -2375,6 +2611,7 @@ export class Page extends EventEmitter {
    * the `selector` doesn't appear after the `timeout` milliseconds of waiting, the
    * function will throw.
    *
+   * @example
    * This method works across navigations:
    *
    * ```ts
@@ -2421,12 +2658,9 @@ export class Page extends EventEmitter {
    */
   async waitForSelector<Selector extends string>(
     selector: Selector,
-    options?: WaitForSelectorOptions
-  ): Promise<ElementHandle<NodeFor<Selector>> | null>;
-  async waitForSelector<Selector extends string>(): Promise<ElementHandle<
-    NodeFor<Selector>
-  > | null> {
-    throw new Error('Not implemented');
+    options: WaitForSelectorOptions = {}
+  ): Promise<ElementHandle<NodeFor<Selector>> | null> {
+    return await this.mainFrame().waitForSelector(selector, options);
   }
 
   /**
@@ -2435,6 +2669,7 @@ export class Page extends EventEmitter {
    * the `xpath` doesn't appear after the `timeout` milliseconds of waiting, the
    * function will throw.
    *
+   * @example
    * This method works across navigation
    *
    * ```ts
@@ -2482,9 +2717,8 @@ export class Page extends EventEmitter {
   waitForXPath(
     xpath: string,
     options?: WaitForSelectorOptions
-  ): Promise<ElementHandle<Node> | null>;
-  waitForXPath(): Promise<ElementHandle<Node> | null> {
-    throw new Error('Not implemented');
+  ): Promise<ElementHandle<Node> | null> {
+    return this.mainFrame().waitForXPath(xpath, options);
   }
 
   /**
@@ -2546,16 +2780,42 @@ export class Page extends EventEmitter {
    */
   waitForFunction<
     Params extends unknown[],
-    Func extends EvaluateFunc<Params> = EvaluateFunc<Params>
+    Func extends EvaluateFunc<Params> = EvaluateFunc<Params>,
   >(
     pageFunction: Func | string,
     options?: FrameWaitForFunctionOptions,
     ...args: Params
-  ): Promise<HandleFor<Awaited<ReturnType<Func>>>>;
-  waitForFunction<
-    Params extends unknown[],
-    Func extends EvaluateFunc<Params> = EvaluateFunc<Params>
-  >(): Promise<HandleFor<Awaited<ReturnType<Func>>>> {
+  ): Promise<HandleFor<Awaited<ReturnType<Func>>>> {
+    return this.mainFrame().waitForFunction(pageFunction, options, ...args);
+  }
+
+  /**
+   * This method is typically coupled with an action that triggers a device
+   * request from an api such as WebBluetooth.
+   *
+   * :::caution
+   *
+   * This must be called before the device request is made. It will not return a
+   * currently active device prompt.
+   *
+   * :::
+   *
+   * @example
+   *
+   * ```ts
+   * const [devicePrompt] = Promise.all([
+   *   page.waitForDevicePrompt(),
+   *   page.click('#connect-bluetooth'),
+   * ]);
+   * await devicePrompt.select(
+   *   await devicePrompt.waitForDevice(({name}) => name.includes('My Device'))
+   * );
+   * ```
+   */
+  waitForDevicePrompt(
+    options?: WaitTimeoutOptions
+  ): Promise<DeviceRequestPrompt>;
+  waitForDevicePrompt(): Promise<DeviceRequestPrompt> {
     throw new Error('Not implemented');
   }
 }
@@ -2588,3 +2848,37 @@ export const unitToPixels = {
   cm: 37.8,
   mm: 3.78,
 };
+
+function convertPrintParameterToInches(
+  parameter?: string | number,
+  lengthUnit: 'in' | 'cm' = 'in'
+): number | undefined {
+  if (typeof parameter === 'undefined') {
+    return undefined;
+  }
+  let pixels;
+  if (isNumber(parameter)) {
+    // Treat numbers as pixel values to be aligned with phantom's paperSize.
+    pixels = parameter;
+  } else if (isString(parameter)) {
+    const text = parameter;
+    let unit = text.substring(text.length - 2).toLowerCase();
+    let valueText = '';
+    if (unit in unitToPixels) {
+      valueText = text.substring(0, text.length - 2);
+    } else {
+      // In case of unknown unit try to parse the whole parameter as number of pixels.
+      // This is consistent with phantom's paperSize behavior.
+      unit = 'px';
+      valueText = text;
+    }
+    const value = Number(valueText);
+    assert(!isNaN(value), 'Failed to parse parameter value: ' + text);
+    pixels = value * unitToPixels[unit as keyof typeof unitToPixels];
+  } else {
+    throw new Error(
+      'page.pdf() Cannot handle parameter type: ' + typeof parameter
+    );
+  }
+  return pixels / unitToPixels[lengthUnit];
+}

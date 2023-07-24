@@ -2,6 +2,451 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @puppeteer/browsers bumped from 0.3.0 to 0.3.1
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * puppeteer-core bumped from 20.1.1 to 20.1.2
+    * @puppeteer/browsers bumped from 1.0.1 to 1.1.0
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * puppeteer-core bumped from 20.8.1 to 20.8.2
+    * @puppeteer/browsers bumped from 1.4.4 to 1.4.5
+
+## [20.9.0](https://github.com/puppeteer/puppeteer/compare/puppeteer-v20.8.3...puppeteer-v20.9.0) (2023-07-20)
+
+
+### Miscellaneous Chores
+
+* **puppeteer:** Synchronize puppeteer versions
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * puppeteer-core bumped from 20.8.3 to 20.9.0
+    * @puppeteer/browsers bumped from 1.4.5 to 1.4.6
+
+## [20.8.3](https://github.com/puppeteer/puppeteer/compare/puppeteer-v20.8.2...puppeteer-v20.8.3) (2023-07-18)
+
+
+### Miscellaneous Chores
+
+* **puppeteer:** Synchronize puppeteer versions
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * puppeteer-core bumped from 20.8.2 to 20.8.3
+
+## [20.8.1](https://github.com/puppeteer/puppeteer/compare/puppeteer-v20.8.0...puppeteer-v20.8.1) (2023-07-11)
+
+
+### Bug Fixes
+
+* remove test metadata files ([#10520](https://github.com/puppeteer/puppeteer/issues/10520)) ([cbf4f2a](https://github.com/puppeteer/puppeteer/commit/cbf4f2a66912f24849ae8c88fc1423851dcc4aa7))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * puppeteer-core bumped from 20.8.0 to 20.8.1
+    * @puppeteer/browsers bumped from 1.4.3 to 1.4.4
+
+## [20.8.0](https://github.com/puppeteer/puppeteer/compare/puppeteer-v20.7.4...puppeteer-v20.8.0) (2023-07-06)
+
+
+### Miscellaneous Chores
+
+* **puppeteer:** Synchronize puppeteer versions
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * puppeteer-core bumped from 20.7.4 to 20.8.0
+
+## [20.7.4](https://github.com/puppeteer/puppeteer/compare/puppeteer-v20.7.3...puppeteer-v20.7.4) (2023-06-29)
+
+
+### Miscellaneous Chores
+
+* **puppeteer:** Synchronize puppeteer versions
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * puppeteer-core bumped from 20.7.3 to 20.7.4
+    * @puppeteer/browsers bumped from 1.4.2 to 1.4.3
+
+## [20.7.3](https://github.com/puppeteer/puppeteer/compare/puppeteer-v20.7.2...puppeteer-v20.7.3) (2023-06-20)
+
+
+### Bug Fixes
+
+* include src into published package ([#10415](https://github.com/puppeteer/puppeteer/issues/10415)) ([d1ffad0](https://github.com/puppeteer/puppeteer/commit/d1ffad059ae66104842b92dc814d362c123b9646))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * puppeteer-core bumped from 20.7.2 to 20.7.3
+    * @puppeteer/browsers bumped from 1.4.1 to 1.4.2
+
+## [20.7.2](https://github.com/puppeteer/puppeteer/compare/puppeteer-v20.7.1...puppeteer-v20.7.2) (2023-06-16)
+
+
+### Miscellaneous Chores
+
+* **puppeteer:** Synchronize puppeteer versions
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * puppeteer-core bumped from 20.7.1 to 20.7.2
+
+## [20.7.1](https://github.com/puppeteer/puppeteer/compare/puppeteer-v20.7.0...puppeteer-v20.7.1) (2023-06-13)
+
+
+### Miscellaneous Chores
+
+* **puppeteer:** Synchronize puppeteer versions
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * puppeteer-core bumped from 20.7.0 to 20.7.1
+
+## [20.7.0](https://github.com/puppeteer/puppeteer/compare/puppeteer-v20.6.0...puppeteer-v20.7.0) (2023-06-13)
+
+
+### Miscellaneous Chores
+
+* **puppeteer:** Synchronize puppeteer versions
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * puppeteer-core bumped from 20.6.0 to 20.7.0
+
+## [20.6.0](https://github.com/puppeteer/puppeteer/compare/puppeteer-v20.5.0...puppeteer-v20.6.0) (2023-06-09)
+
+
+### Miscellaneous Chores
+
+* **puppeteer:** Synchronize puppeteer versions
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * puppeteer-core bumped from 20.5.0 to 20.6.0
+
+## [20.5.0](https://github.com/puppeteer/puppeteer/compare/puppeteer-v20.4.0...puppeteer-v20.5.0) (2023-05-31)
+
+
+### Miscellaneous Chores
+
+* **puppeteer:** Synchronize puppeteer versions
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * puppeteer-core bumped from 20.4.0 to 20.5.0
+    * @puppeteer/browsers bumped from 1.4.0 to 1.4.1
+
+## [20.4.0](https://github.com/puppeteer/puppeteer/compare/puppeteer-v20.3.0...puppeteer-v20.4.0) (2023-05-24)
+
+
+### Miscellaneous Chores
+
+* **puppeteer:** Synchronize puppeteer versions
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * puppeteer-core bumped from 20.3.0 to 20.4.0
+    * @puppeteer/browsers bumped from 1.3.0 to 1.4.0
+
+## [20.3.0](https://github.com/puppeteer/puppeteer/compare/puppeteer-v20.2.1...puppeteer-v20.3.0) (2023-05-22)
+
+
+### Features
+
+* add an ability to trim cache for Puppeteer ([#10199](https://github.com/puppeteer/puppeteer/issues/10199)) ([1ad32ec](https://github.com/puppeteer/puppeteer/commit/1ad32ec9948ca3e07e15548a562c8f3c633b3dc3))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * puppeteer-core bumped from 20.2.1 to 20.3.0
+
+## [20.2.1](https://github.com/puppeteer/puppeteer/compare/puppeteer-v20.2.0...puppeteer-v20.2.1) (2023-05-15)
+
+
+### Miscellaneous Chores
+
+* **puppeteer:** Synchronize puppeteer versions
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * puppeteer-core bumped from 20.2.0 to 20.2.1
+    * @puppeteer/browsers bumped from 1.2.0 to 1.3.0
+
+## [20.2.0](https://github.com/puppeteer/puppeteer/compare/puppeteer-v20.1.2...puppeteer-v20.2.0) (2023-05-11)
+
+
+### Bug Fixes
+
+* downloadPath should be used by the install script ([#10163](https://github.com/puppeteer/puppeteer/issues/10163)) ([4398f66](https://github.com/puppeteer/puppeteer/commit/4398f66f281f1ffe5be81b529fc4751edfaf761d))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * puppeteer-core bumped from 20.1.2 to 20.2.0
+    * @puppeteer/browsers bumped from 1.1.0 to 1.2.0
+
+## [20.1.1](https://github.com/puppeteer/puppeteer/compare/puppeteer-v20.1.0...puppeteer-v20.1.1) (2023-05-05)
+
+
+### Bug Fixes
+
+* rename PUPPETEER_DOWNLOAD_HOST to PUPPETEER_DOWNLOAD_BASE_URL ([#10130](https://github.com/puppeteer/puppeteer/issues/10130)) ([9758cae](https://github.com/puppeteer/puppeteer/commit/9758cae029f90908c4b5340561d9c51c26aa2f21))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * puppeteer-core bumped from 20.1.0 to 20.1.1
+    * @puppeteer/browsers bumped from 1.0.0 to 1.0.1
+
+## [20.1.0](https://github.com/puppeteer/puppeteer/compare/puppeteer-v20.0.0...puppeteer-v20.1.0) (2023-05-03)
+
+
+### Miscellaneous Chores
+
+* **puppeteer:** Synchronize puppeteer versions
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * puppeteer-core bumped from 20.0.0 to 20.1.0
+
+## [20.0.0](https://github.com/puppeteer/puppeteer/compare/puppeteer-v19.11.1...puppeteer-v20.0.0) (2023-05-02)
+
+
+### ⚠ BREAKING CHANGES
+
+* switch to Chrome for Testing instead of Chromium ([#10054](https://github.com/puppeteer/puppeteer/issues/10054))
+
+### Features
+
+* switch to Chrome for Testing instead of Chromium ([#10054](https://github.com/puppeteer/puppeteer/issues/10054)) ([df4d60c](https://github.com/puppeteer/puppeteer/commit/df4d60c187aa11c4ad783827242e9511f4ec2aab))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * puppeteer-core bumped from 19.11.1 to 20.0.0
+    * @puppeteer/browsers bumped from 0.5.0 to 1.0.0
+
+## [19.11.1](https://github.com/puppeteer/puppeteer/compare/puppeteer-v19.11.0...puppeteer-v19.11.1) (2023-04-25)
+
+
+### Miscellaneous Chores
+
+* **puppeteer:** Synchronize puppeteer versions
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * puppeteer-core bumped from 19.11.0 to 19.11.1
+
+## [19.11.0](https://github.com/puppeteer/puppeteer/compare/puppeteer-v19.10.1...puppeteer-v19.11.0) (2023-04-24)
+
+
+### Miscellaneous Chores
+
+* **puppeteer:** Synchronize puppeteer versions
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * puppeteer-core bumped from 19.10.1 to 19.11.0
+
+## [19.10.1](https://github.com/puppeteer/puppeteer/compare/puppeteer-v19.10.0...puppeteer-v19.10.1) (2023-04-21)
+
+
+### Miscellaneous Chores
+
+* **puppeteer:** Synchronize puppeteer versions
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * puppeteer-core bumped from 19.10.0 to 19.10.1
+    * @puppeteer/browsers bumped from 0.4.1 to 0.5.0
+
+## [19.10.0](https://github.com/puppeteer/puppeteer/compare/puppeteer-v19.9.1...puppeteer-v19.10.0) (2023-04-20)
+
+
+### Miscellaneous Chores
+
+* **puppeteer:** Synchronize puppeteer versions
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * puppeteer-core bumped from 19.9.1 to 19.10.0
+
+## [19.9.1](https://github.com/puppeteer/puppeteer/compare/puppeteer-v19.9.0...puppeteer-v19.9.1) (2023-04-17)
+
+
+### Miscellaneous Chores
+
+* **puppeteer:** Synchronize puppeteer versions
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * puppeteer-core bumped from 19.9.0 to 19.9.1
+
+## [19.9.0](https://github.com/puppeteer/puppeteer/compare/puppeteer-v19.8.5...puppeteer-v19.9.0) (2023-04-13)
+
+
+### Miscellaneous Chores
+
+* **puppeteer:** Synchronize puppeteer versions
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * puppeteer-core bumped from 19.8.5 to 19.9.0
+    * @puppeteer/browsers bumped from 0.4.0 to 0.4.1
+
+## [19.8.5](https://github.com/puppeteer/puppeteer/compare/puppeteer-v19.8.4...puppeteer-v19.8.5) (2023-04-06)
+
+
+### Miscellaneous Chores
+
+* **puppeteer:** Synchronize puppeteer versions
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * puppeteer-core bumped from 19.8.4 to 19.8.5
+    * @puppeteer/browsers bumped from 0.3.3 to 0.4.0
+
+## [19.8.4](https://github.com/puppeteer/puppeteer/compare/puppeteer-v19.8.3...puppeteer-v19.8.4) (2023-04-06)
+
+
+### Bug Fixes
+
+* consider downloadHost as baseUrl ([#9973](https://github.com/puppeteer/puppeteer/issues/9973)) ([05a44af](https://github.com/puppeteer/puppeteer/commit/05a44afe5affcac9fe0f0a2e83f17807c99b2f0c))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * puppeteer-core bumped from 19.8.3 to 19.8.4
+    * @puppeteer/browsers bumped from 0.3.2 to 0.3.3
+
+## [19.8.3](https://github.com/puppeteer/puppeteer/compare/puppeteer-v19.8.2...puppeteer-v19.8.3) (2023-04-03)
+
+
+### Miscellaneous Chores
+
+* **puppeteer:** Synchronize puppeteer versions
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * puppeteer-core bumped from 19.8.1 to 19.8.3
+    * @puppeteer/browsers bumped from 0.3.1 to 0.3.2
+
+## [19.8.1](https://github.com/puppeteer/puppeteer/compare/puppeteer-v19.8.0...puppeteer-v19.8.1) (2023-03-28)
+
+
+### Miscellaneous Chores
+
+* **puppeteer:** Synchronize puppeteer versions
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * puppeteer-core bumped from 19.8.0 to 19.8.1
+
+## [19.8.0](https://github.com/puppeteer/puppeteer/compare/puppeteer-v19.7.5...puppeteer-v19.8.0) (2023-03-24)
+
+
+### Miscellaneous Chores
+
+* **puppeteer:** Synchronize puppeteer versions
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * puppeteer-core bumped from 19.7.5 to 19.8.0
+
 ## [19.7.5](https://github.com/puppeteer/puppeteer/compare/puppeteer-v19.7.4...puppeteer-v19.7.5) (2023-03-14)
 
 

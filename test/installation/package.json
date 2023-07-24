@@ -26,10 +26,11 @@
       ]
     },
     "build:packages": {
-      "command": "npm pack --workspace puppeteer --workspace puppeteer-core",
+      "command": "npm pack --quiet --workspace puppeteer --workspace puppeteer-core --workspace @puppeteer/browsers",
       "dependencies": [
         "../../packages/puppeteer:build",
-        "../../packages/puppeteer-core:build"
+        "../../packages/puppeteer-core:build",
+        "../../packages/browsers:build"
       ],
       "files": [],
       "output": [
@@ -44,7 +45,7 @@
     "assets"
   ],
   "dependencies": {
-    "glob": "9.3.0",
+    "glob": "10.3.3",
     "mocha": "10.2.0"
   }
 }

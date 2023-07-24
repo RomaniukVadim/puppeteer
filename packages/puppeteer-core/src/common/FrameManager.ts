@@ -21,18 +21,23 @@ import {assert} from '../util/assert.js';
 import {isErrorLike} from '../util/ErrorLike.js';
 
 import {CDPSession, isTargetClosedError} from './Connection.js';
+import {DeviceRequestPromptManager} from './DeviceRequestPrompt.js';
 import {EventEmitter} from './EventEmitter.js';
-import {EVALUATION_SCRIPT_URL, ExecutionContext} from './ExecutionContext.js';
+import {ExecutionContext} from './ExecutionContext.js';
 import {Frame} from './Frame.js';
+import {Frame as CDPFrame} from './Frame.js';
 import {FrameTree} from './FrameTree.js';
 import {IsolatedWorld} from './IsolatedWorld.js';
 import {MAIN_WORLD, PUPPETEER_WORLD} from './IsolatedWorlds.js';
 import {NetworkManager} from './NetworkManager.js';
-import {Target} from './Target.js';
+import {CDPTarget} from './Target.js';
 import {TimeoutSettings} from './TimeoutSettings.js';
-import {debugError} from './util.js';
+import {debugError, PuppeteerURL} from './util.js';
 
-const UTILITY_WORLD_NAME = '__puppeteer_utility_world__';
+/**
+ * @internal
+ */
+export const UTILITY_WORLD_NAME = '__puppeteer_utility_world__';
 
 /**
  * We use symbols to prevent external parties listening to these events.
@@ -68,7 +73,7 @@ export class FrameManager extends EventEmitter {
   /**
    * @internal
    */
-  _frameTree = new FrameTree();
+  _frameTree = new FrameTree<Frame>();
 
   /**
    * Set of frame IDs stored to indicate if a frame has received a
@@ -76,6 +81,11 @@ export class FrameManager extends EventEmitter {
    * frameNavigated event usually contains the latest information.
    */
   #frameNavigatedReceived = new Set<string>();
+
+  #deviceRequestPromptManagerMap = new WeakMap<
+    CDPSession,
+    DeviceRequestPromptManager
+  >();
 
   get timeoutSettings(): TimeoutSettings {
     return this.#timeoutSettings;
@@ -109,7 +119,7 @@ export class FrameManager extends EventEmitter {
     });
     session.on('Page.frameNavigated', event => {
       this.#frameNavigatedReceived.add(event.frame.id);
-      this.#onFrameNavigated(event.frame);
+      void this.#onFrameNavigated(event.frame);
     });
     session.on('Page.navigatedWithinDocument', event => {
       this.#onFrameNavigatedWithinDocument(event.frameId, event.url);
@@ -206,7 +216,7 @@ export class FrameManager extends EventEmitter {
     return this._frameTree.getById(frameId) || null;
   }
 
-  onAttachedToTarget(target: Target): void {
+  onAttachedToTarget(target: CDPTarget): void {
     if (target._getTargetInfo().type !== 'iframe') {
       return;
     }
@@ -216,7 +226,19 @@ export class FrameManager extends EventEmitter {
       frame.updateClient(target._session()!);
     }
     this.setupEventListeners(target._session()!);
-    this.initialize(target._session());
+    void this.initialize(target._session());
+  }
+
+  /**
+   * @internal
+   */
+  _deviceRequestPromptManager(client: CDPSession): DeviceRequestPromptManager {
+    let manager = this.#deviceRequestPromptManagerMap.get(client);
+    if (manager === undefined) {
+      manager = new DeviceRequestPromptManager(client, this.#timeoutSettings);
+      this.#deviceRequestPromptManagerMap.set(client, manager);
+    }
+    return manager;
   }
 
   #onLifecycleEvent(event: Protocol.Page.LifecycleEventEvent): void {
@@ -257,7 +279,7 @@ export class FrameManager extends EventEmitter {
       );
     }
     if (!this.#frameNavigatedReceived.has(frameTree.frame.id)) {
-      this.#onFrameNavigated(frameTree.frame);
+      void this.#onFrameNavigated(frameTree.frame);
     } else {
       this.#frameNavigatedReceived.delete(frameTree.frame.id);
     }
@@ -287,7 +309,7 @@ export class FrameManager extends EventEmitter {
       return;
     }
 
-    frame = new Frame(this, frameId, parentFrameId, session);
+    frame = new CDPFrame(this, frameId, parentFrameId, session);
     this._frameTree.addFrame(frame);
     this.emit(FrameManagerEmittedEvents.FrameAttached, frame);
   }
@@ -313,7 +335,7 @@ export class FrameManager extends EventEmitter {
         frame._id = frameId;
       } else {
         // Initial main frame navigation.
-        frame = new Frame(this, frameId, undefined, this.#client);
+        frame = new CDPFrame(this, frameId, undefined, this.#client);
       }
       this._frameTree.addFrame(frame);
     }
@@ -331,7 +353,7 @@ export class FrameManager extends EventEmitter {
     }
 
     await session.send('Page.addScriptToEvaluateOnNewDocument', {
-      source: `//# sourceURL=${EVALUATION_SCRIPT_URL}`,
+      source: `//# sourceURL=${PuppeteerURL.INTERNAL_URL}`,
       worldName: name,
     });
 

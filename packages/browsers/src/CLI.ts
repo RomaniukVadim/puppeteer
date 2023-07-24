@@ -18,8 +18,9 @@ import {stdin as input, stdout as output} from 'process';
 import * as readline from 'readline';
 
 import ProgressBar from 'progress';
-import yargs from 'yargs';
+import type * as Yargs from 'yargs';
 import {hideBin} from 'yargs/helpers';
+import yargs from 'yargs/yargs';
 
 import {
   resolveBuildId,
@@ -29,23 +30,24 @@ import {
 } from './browser-data/browser-data.js';
 import {Cache} from './Cache.js';
 import {detectBrowserPlatform} from './detectPlatform.js';
-import {fetch} from './fetch.js';
+import {install} from './install.js';
 import {
   computeExecutablePath,
   computeSystemExecutablePath,
   launch,
-} from './launcher.js';
+} from './launch.js';
 
-type InstallArgs = {
+interface InstallArgs {
   browser: {
     name: Browser;
     buildId: string;
   };
   path?: string;
   platform?: BrowserPlatform;
-};
+  baseUrl?: string;
+}
 
-type LaunchArgs = {
+interface LaunchArgs {
   browser: {
     name: Browser;
     buildId: string;
@@ -54,12 +56,15 @@ type LaunchArgs = {
   platform?: BrowserPlatform;
   detached: boolean;
   system: boolean;
-};
+}
 
-type ClearArgs = {
+interface ClearArgs {
   path?: string;
-};
+}
 
+/**
+ * @public
+ */
 export class CLI {
   #cachePath;
   #rl?: readline.Interface;
@@ -69,7 +74,7 @@ export class CLI {
     this.#rl = rl;
   }
 
-  #defineBrowserParameter(yargs: yargs.Argv<unknown>): void {
+  #defineBrowserParameter(yargs: Yargs.Argv<unknown>): void {
     yargs.positional('browser', {
       description:
         'Which browser to install <browser>[@<buildId|latest>]. `latest` will try to find the latest available build. `buildId` is a browser-specific identifier such as a version or a revision.',
@@ -83,7 +88,7 @@ export class CLI {
     });
   }
 
-  #definePlatformParameter(yargs: yargs.Argv<unknown>): void {
+  #definePlatformParameter(yargs: Yargs.Argv<unknown>): void {
     yargs.option('platform', {
       type: 'string',
       desc: 'Platform that the binary needs to be compatible with.',
@@ -92,7 +97,7 @@ export class CLI {
     });
   }
 
-  #definePathParameter(yargs: yargs.Argv<unknown>, required = false): void {
+  #definePathParameter(yargs: Yargs.Argv<unknown>, required = false): void {
     yargs.option('path', {
       type: 'string',
       desc: 'Path to the root folder for the browser downloads and installation. The installation folder structure is compatible with the cache structure used by Puppeteer.',
@@ -105,7 +110,8 @@ export class CLI {
   }
 
   async run(argv: string[]): Promise<void> {
-    await yargs(hideBin(argv))
+    const yargsInstance = yargs(hideBin(argv));
+    await yargsInstance
       .scriptName('@puppeteer/browsers')
       .command(
         'install <browser>',
@@ -114,6 +120,10 @@ export class CLI {
           this.#defineBrowserParameter(yargs);
           this.#definePlatformParameter(yargs);
           this.#definePathParameter(yargs);
+          yargs.option('base-url', {
+            type: 'string',
+            desc: 'Base URL to download from',
+          });
           yargs.example(
             '$0 install chrome',
             'Install the latest available build of the Chrome browser.'
@@ -150,15 +160,16 @@ export class CLI {
             args.platform,
             args.browser.buildId
           );
-          await fetch({
+          await install({
             browser: args.browser.name,
             buildId: args.browser.buildId,
             platform: args.platform,
             cacheDir: args.path ?? this.#cachePath,
-            downloadProgressCallback: this.#makeProgressCallback(
+            downloadProgressCallback: makeProgressCallback(
               args.browser.name,
               args.browser.buildId
             ),
+            baseUrl: args.baseUrl,
           });
           console.log(
             `${args.browser.name}@${
@@ -254,7 +265,7 @@ export class CLI {
       )
       .demandCommand(1)
       .help()
-      .wrap(Math.min(120, yargs.terminalWidth()))
+      .wrap(Math.min(120, yargsInstance.terminalWidth()))
       .parse();
   }
 
@@ -263,34 +274,41 @@ export class CLI {
   }
 
   #parseBuildId(version: string): string {
-    return version.split('@').pop() ?? 'latest';
+    const parts = version.split('@');
+    return parts.length === 2 ? parts[1]! : 'latest';
   }
+}
 
-  #toMegabytes(bytes: number) {
-    const mb = bytes / 1000 / 1000;
-    return `${Math.round(mb * 10) / 10} MB`;
-  }
+/**
+ * @public
+ */
+export function makeProgressCallback(
+  browser: Browser,
+  buildId: string
+): (downloadedBytes: number, totalBytes: number) => void {
+  let progressBar: ProgressBar;
+  let lastDownloadedBytes = 0;
+  return (downloadedBytes: number, totalBytes: number) => {
+    if (!progressBar) {
+      progressBar = new ProgressBar(
+        `Downloading ${browser} r${buildId} - ${toMegabytes(
+          totalBytes
+        )} [:bar] :percent :etas `,
+        {
+          complete: '=',
+          incomplete: ' ',
+          width: 20,
+          total: totalBytes,
+        }
+      );
+    }
+    const delta = downloadedBytes - lastDownloadedBytes;
+    lastDownloadedBytes = downloadedBytes;
+    progressBar.tick(delta);
+  };
+}
 
-  #makeProgressCallback(browser: Browser, buildId: string) {
-    let progressBar: ProgressBar;
-    let lastDownloadedBytes = 0;
-    return (downloadedBytes: number, totalBytes: number) => {
-      if (!progressBar) {
-        progressBar = new ProgressBar(
-          `Downloading ${browser} r${buildId} - ${this.#toMegabytes(
-            totalBytes
-          )} [:bar] :percent :etas `,
-          {
-            complete: '=',
-            incomplete: ' ',
-            width: 20,
-            total: totalBytes,
-          }
-        );
-      }
-      const delta = downloadedBytes - lastDownloadedBytes;
-      lastDownloadedBytes = downloadedBytes;
-      progressBar.tick(delta);
-    };
-  }
+function toMegabytes(bytes: number) {
+  const mb = bytes / 1000 / 1000;
+  return `${Math.round(mb * 10) / 10} MB`;
 }

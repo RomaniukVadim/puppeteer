@@ -17,12 +17,12 @@
 import {Protocol} from 'devtools-protocol';
 
 import {assert} from '../util/assert.js';
-import {createDebuggableDeferredPromise} from '../util/DebuggableDeferredPromise.js';
-import {DeferredPromise} from '../util/DeferredPromise.js';
+import {createDebuggableDeferred} from '../util/DebuggableDeferred.js';
+import {Deferred} from '../util/Deferred.js';
 
 import {CDPSession} from './Connection.js';
 import {EventEmitter} from './EventEmitter.js';
-import {Frame} from './Frame.js';
+import {FrameManager} from './FrameManager.js';
 import {HTTPRequest} from './HTTPRequest.js';
 import {HTTPResponse} from './HTTPResponse.js';
 import {FetchRequestId, NetworkEventManager} from './NetworkEventManager.js';
@@ -71,17 +71,10 @@ export const NetworkManagerEmittedEvents = {
 /**
  * @internal
  */
-interface FrameManager {
-  frame(frameId: string): Frame | null;
-}
-
-/**
- * @internal
- */
 export class NetworkManager extends EventEmitter {
   #client: CDPSession;
   #ignoreHTTPSErrors: boolean;
-  #frameManager: FrameManager;
+  #frameManager: Pick<FrameManager, 'frame'>;
   #networkEventManager = new NetworkEventManager();
   #extraHTTPHeaders: Record<string, string> = {};
   #credentials?: Credentials;
@@ -95,12 +88,12 @@ export class NetworkManager extends EventEmitter {
     download: -1,
     latency: 0,
   };
-  #deferredInitPromise?: DeferredPromise<void>;
+  #deferredInit?: Deferred<void>;
 
   constructor(
     client: CDPSession,
     ignoreHTTPSErrors: boolean,
-    frameManager: FrameManager
+    frameManager: Pick<FrameManager, 'frame'>
   ) {
     super();
     this.#client = client;
@@ -137,10 +130,10 @@ export class NetworkManager extends EventEmitter {
    * might not resolve until after the target is resumed causing a deadlock.
    */
   initialize(): Promise<void> {
-    if (this.#deferredInitPromise) {
-      return this.#deferredInitPromise;
+    if (this.#deferredInit) {
+      return this.#deferredInit.valueOrThrow();
     }
-    this.#deferredInitPromise = createDebuggableDeferredPromise(
+    this.#deferredInit = createDebuggableDeferred(
       'NetworkManager initialization timed out'
     );
     const init = Promise.all([
@@ -151,7 +144,7 @@ export class NetworkManager extends EventEmitter {
         : null,
       this.#client.send('Network.enable'),
     ]);
-    const deferredInitPromise = this.#deferredInitPromise;
+    const deferredInitPromise = this.#deferredInit;
     init
       .then(() => {
         deferredInitPromise.resolve();
@@ -159,7 +152,7 @@ export class NetworkManager extends EventEmitter {
       .catch(err => {
         deferredInitPromise.reject(err);
       });
-    return this.#deferredInitPromise;
+    return this.#deferredInit.valueOrThrow();
   }
 
   async authenticate(credentials?: Credentials): Promise<void> {
@@ -188,8 +181,8 @@ export class NetworkManager extends EventEmitter {
     return Object.assign({}, this.#extraHTTPHeaders);
   }
 
-  numRequestsInProgress(): number {
-    return this.#networkEventManager.numRequestsInProgress();
+  inFlightRequestsCount(): number {
+    return this.#networkEventManager.inFlightRequestsCount();
   }
 
   async setOfflineMode(value: boolean): Promise<void> {
@@ -302,11 +295,7 @@ export class NetworkManager extends EventEmitter {
   }
 
   #onAuthRequired(event: Protocol.Fetch.AuthRequiredEvent): void {
-    /* TODO(jacktfranklin): This is defined in protocol.d.ts but not
-     * in an easily referrable way - we should look at exposing it.
-     */
-    type AuthResponse = 'Default' | 'CancelAuth' | 'ProvideCredentials';
-    let response: AuthResponse = 'Default';
+    let response: Protocol.Fetch.AuthChallengeResponse['response'] = 'Default';
     if (this.#attemptedAuthentications.has(event.requestId)) {
       response = 'CancelAuth';
     } else if (this.#credentials) {
@@ -347,6 +336,7 @@ export class NetworkManager extends EventEmitter {
     const {networkId: networkRequestId, requestId: fetchRequestId} = event;
 
     if (!networkRequestId) {
+      this.#onRequestWithoutNetworkInstrumentation(event);
       return;
     }
 
@@ -383,6 +373,27 @@ export class NetworkManager extends EventEmitter {
       // includes extra headers, like: Accept, Origin
       ...requestPausedEvent.request.headers,
     };
+  }
+
+  #onRequestWithoutNetworkInstrumentation(
+    event: Protocol.Fetch.RequestPausedEvent
+  ): void {
+    // If an event has no networkId it should not have any network events. We
+    // still want to dispatch it for the interception by the user.
+    const frame = event.frameId
+      ? this.#frameManager.frame(event.frameId)
+      : null;
+
+    const request = new HTTPRequest(
+      this.#client,
+      frame,
+      event.requestId,
+      this.#userRequestInterceptionEnabled,
+      event,
+      []
+    );
+    this.emit(NetworkManagerEmittedEvents.Request, request);
+    void request.finalizeInterceptions();
   }
 
   #onRequest(
@@ -438,7 +449,7 @@ export class NetworkManager extends EventEmitter {
     );
     this.#networkEventManager.storeRequest(event.requestId, request);
     this.emit(NetworkManagerEmittedEvents.Request, request);
-    request.finalizeInterceptions();
+    void request.finalizeInterceptions();
   }
 
   #onRequestServedFromCache(
@@ -494,6 +505,13 @@ export class NetworkManager extends EventEmitter {
             responseReceived.requestId
         )
       );
+    }
+
+    // Chromium sends wrong extraInfo events for responses served from cache.
+    // See https://github.com/puppeteer/puppeteer/issues/9965 and
+    // https://crbug.com/1340398.
+    if (responseReceived.response.fromDiskCache) {
+      extraInfo = null;
     }
 
     const response = new HTTPResponse(

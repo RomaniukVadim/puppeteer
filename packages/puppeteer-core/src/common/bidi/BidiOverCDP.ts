@@ -19,7 +19,8 @@ import * as Bidi from 'chromium-bidi/lib/cjs/protocol/protocol.js';
 import type {ProtocolMapping} from 'devtools-protocol/types/protocol-mapping.js';
 
 import {CDPSession, Connection as CDPPPtrConnection} from '../Connection.js';
-import {Handler} from '../EventEmitter.js';
+import {TargetCloseError} from '../Errors.js';
+import {EventEmitter, Handler} from '../EventEmitter.js';
 
 import {Connection as BidiPPtrConnection} from './Connection.js';
 
@@ -52,7 +53,7 @@ export async function connectBidiOverCDP(
     // Forwards a BiDi event sent by BidiServer to Puppeteer.
     pptrTransport.onmessage(JSON.stringify(message));
   });
-  const pptrBiDiConnection = new BidiPPtrConnection(pptrTransport);
+  const pptrBiDiConnection = new BidiPPtrConnection(cdp.url(), pptrTransport);
   const bidiServer = await BidiMapper.BidiServer.createAndStart(
     transportBiDi,
     cdpConnectionAdapter,
@@ -106,9 +107,10 @@ class CDPConnectionAdapter {
  *
  * @internal
  */
-class CDPClientAdapter<
-  T extends Pick<CDPPPtrConnection, 'send' | 'on' | 'off'>
-> extends BidiMapper.EventEmitter<CdpEvents> {
+class CDPClientAdapter<T extends EventEmitter & Pick<CDPPPtrConnection, 'send'>>
+  extends BidiMapper.EventEmitter<CdpEvents>
+  implements BidiMapper.CdpClient
+{
   #closed = false;
   #client: T;
 
@@ -146,6 +148,10 @@ class CDPClientAdapter<
     this.#client.off('*', this.#forwardMessage as Handler<any>);
     this.#closed = true;
   }
+
+  isCloseError(error: any): boolean {
+    return error instanceof TargetCloseError;
+  }
 }
 
 /**
@@ -157,17 +163,20 @@ class NoOpTransport
   extends BidiMapper.EventEmitter<any>
   implements BidiMapper.BidiTransport
 {
-  #onMessage: (message: Bidi.Message.RawCommandRequest) => Promise<void> =
-    async (_m: Bidi.Message.RawCommandRequest): Promise<void> => {
-      return;
-    };
+  #onMessage: (
+    message: Bidi.Message.RawCommandRequest
+  ) => Promise<void> | void = async (
+    _m: Bidi.Message.RawCommandRequest
+  ): Promise<void> => {
+    return;
+  };
 
   emitMessage(message: Bidi.Message.RawCommandRequest) {
-    this.#onMessage(message);
+    void this.#onMessage(message);
   }
 
   setOnMessage(
-    onMessage: (message: Bidi.Message.RawCommandRequest) => Promise<void>
+    onMessage: (message: Bidi.Message.RawCommandRequest) => Promise<void> | void
   ): void {
     this.#onMessage = onMessage;
   }

@@ -21,10 +21,12 @@ import {ChildProcess} from 'child_process';
 import {Protocol} from 'devtools-protocol';
 
 import {EventEmitter} from '../common/EventEmitter.js';
-import type {Target} from '../common/Target.js'; // TODO: move to ./api
+import {waitWithTimeout} from '../common/util.js';
+import {Deferred} from '../util/Deferred.js';
 
 import type {BrowserContext} from './BrowserContext.js';
-import type {Page} from './Page.js'; // TODO: move to ./api
+import type {Page} from './Page.js';
+import type {Target} from './Target.js';
 
 /**
  * BrowserContext options.
@@ -51,16 +53,12 @@ export type BrowserCloseCallback = () => Promise<void> | void;
 /**
  * @public
  */
-export type TargetFilterCallback = (
-  target: Protocol.Target.TargetInfo
-) => boolean;
+export type TargetFilterCallback = (target: Target) => boolean;
 
 /**
  * @internal
  */
-export type IsPageTargetCallback = (
-  target: Protocol.Target.TargetInfo
-) => boolean;
+export type IsPageTargetCallback = (target: Target) => boolean;
 
 /**
  * @internal
@@ -84,6 +82,7 @@ export const WEB_PERMISSION_TO_PROTOCOL_PERMISSION = new Map<
   ['accessibility-events', 'accessibilityEvents'],
   ['clipboard-read', 'clipboardReadWrite'],
   ['clipboard-write', 'clipboardReadWrite'],
+  ['clipboard-sanitized-write', 'clipboardSanitizedWrite'],
   ['payment-handler', 'paymentHandler'],
   ['persistent-storage', 'durableStorage'],
   ['idle-detection', 'idleDetection'],
@@ -108,6 +107,7 @@ export type Permission =
   | 'accessibility-events'
   | 'clipboard-read'
   | 'clipboard-write'
+  | 'clipboard-sanitized-write'
   | 'payment-handler'
   | 'persistent-storage'
   | 'idle-detection'
@@ -119,7 +119,7 @@ export type Permission =
 export interface WaitForTargetOptions {
   /**
    * Maximum wait time in milliseconds. Pass `0` to disable the timeout.
-   * @defaultValue 30 seconds.
+   * @defaultValue `30_000`
    */
   timeout?: number;
 }
@@ -131,10 +131,10 @@ export interface WaitForTargetOptions {
  */
 export const enum BrowserEmittedEvents {
   /**
-   * Emitted when Puppeteer gets disconnected from the Chromium instance. This
+   * Emitted when Puppeteer gets disconnected from the browser instance. This
    * might happen because of one of the following:
    *
-   * - Chromium is closed or crashed
+   * - browser is closed or crashed
    *
    * - The {@link Browser.disconnect | browser.disconnect } method was called.
    */
@@ -173,7 +173,7 @@ export const enum BrowserEmittedEvents {
 }
 
 /**
- * A Browser is created when Puppeteer connects to a Chromium instance, either through
+ * A Browser is created when Puppeteer connects to a browser instance, either through
  * {@link PuppeteerNode.launch} or {@link Puppeteer.connect}.
  *
  * @remarks
@@ -203,14 +203,14 @@ export const enum BrowserEmittedEvents {
  *
  * (async () => {
  *   const browser = await puppeteer.launch();
- *   // Store the endpoint to be able to reconnect to Chromium
+ *   // Store the endpoint to be able to reconnect to the browser.
  *   const browserWSEndpoint = browser.wsEndpoint();
- *   // Disconnect puppeteer from Chromium
+ *   // Disconnect puppeteer from the browser.
  *   browser.disconnect();
  *
  *   // Use the endpoint to reestablish a connection
  *   const browser2 = await puppeteer.connect({browserWSEndpoint});
- *   // Close Chromium
+ *   // Close the browser.
  *   await browser2.close();
  * })();
  * ```
@@ -378,12 +378,35 @@ export class Browser extends EventEmitter {
    * );
    * ```
    */
-  waitForTarget(
+  async waitForTarget(
     predicate: (x: Target) => boolean | Promise<boolean>,
-    options?: WaitForTargetOptions
-  ): Promise<Target>;
-  waitForTarget(): Promise<Target> {
-    throw new Error('Not implemented');
+    options: WaitForTargetOptions = {}
+  ): Promise<Target> {
+    const {timeout = 30000} = options;
+    const targetDeferred = Deferred.create<Target | PromiseLike<Target>>();
+
+    this.on(BrowserEmittedEvents.TargetCreated, check);
+    this.on(BrowserEmittedEvents.TargetChanged, check);
+    try {
+      this.targets().forEach(check);
+      if (!timeout) {
+        return await targetDeferred.valueOrThrow();
+      }
+      return await waitWithTimeout(
+        targetDeferred.valueOrThrow(),
+        'target',
+        timeout
+      );
+    } finally {
+      this.off(BrowserEmittedEvents.TargetCreated, check);
+      this.off(BrowserEmittedEvents.TargetChanged, check);
+    }
+
+    async function check(target: Target): Promise<void> {
+      if ((await predicate(target)) && !targetDeferred.resolved()) {
+        targetDeferred.resolve(target);
+      }
+    }
   }
 
   /**
@@ -395,8 +418,16 @@ export class Browser extends EventEmitter {
    * browser contexts. Non-visible pages, such as `"background_page"`, will not be listed
    * here. You can find them using {@link Target.page}.
    */
-  pages(): Promise<Page[]> {
-    throw new Error('Not implemented');
+  async pages(): Promise<Page[]> {
+    const contextPages = await Promise.all(
+      this.browserContexts().map(context => {
+        return context.pages();
+      })
+    );
+    // Flatten array.
+    return contextPages.reduce((acc, x) => {
+      return acc.concat(x);
+    }, []);
   }
 
   /**
@@ -404,10 +435,12 @@ export class Browser extends EventEmitter {
    *
    * @remarks
    *
-   * For headless Chromium, this is similar to `HeadlessChrome/61.0.3153.0`. For
-   * non-headless, this is similar to `Chrome/61.0.3153.0`.
+   * For headless browser, this is similar to `HeadlessChrome/61.0.3153.0`. For
+   * non-headless or new-headless, this is similar to `Chrome/61.0.3153.0`. For
+   * Firefox, it is similar to `Firefox/116.0a1`.
    *
-   * The format of browser.version() might change with future releases of Chromium.
+   * The format of browser.version() might change with future releases of
+   * browsers.
    */
   version(): Promise<string> {
     throw new Error('Not implemented');
@@ -422,15 +455,16 @@ export class Browser extends EventEmitter {
   }
 
   /**
-   * Closes Chromium and all of its pages (if any were opened). The {@link Browser} object
-   * itself is considered to be disposed and cannot be used anymore.
+   * Closes the browser and all of its pages (if any were opened). The
+   * {@link Browser} object itself is considered to be disposed and cannot be
+   * used anymore.
    */
   close(): Promise<void> {
     throw new Error('Not implemented');
   }
 
   /**
-   * Disconnects Puppeteer from the browser, but leaves the Chromium process running.
+   * Disconnects Puppeteer from the browser, but leaves the browser process running.
    * After calling `disconnect`, the {@link Browser} object is considered disposed and
    * cannot be used anymore.
    */

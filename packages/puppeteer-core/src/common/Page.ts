@@ -21,12 +21,15 @@ import {Protocol} from 'devtools-protocol';
 import type {Browser} from '../api/Browser.js';
 import type {BrowserContext} from '../api/BrowserContext.js';
 import {ElementHandle} from '../api/ElementHandle.js';
+import {Frame} from '../api/Frame.js';
+import {HTTPRequest} from '../api/HTTPRequest.js';
 import {HTTPResponse} from '../api/HTTPResponse.js';
 import {JSHandle} from '../api/JSHandle.js';
 import {
   GeolocationOptions,
   MediaFeature,
   Metrics,
+  NewDocumentScriptEvaluation,
   Page,
   PageEmittedEvents,
   ScreenshotClip,
@@ -35,10 +38,7 @@ import {
   WaitTimeoutOptions,
 } from '../api/Page.js';
 import {assert} from '../util/assert.js';
-import {
-  createDeferredPromise,
-  DeferredPromise,
-} from '../util/DeferredPromise.js';
+import {Deferred} from '../util/Deferred.js';
 import {isErrorLike} from '../util/ErrorLike.js';
 
 import {Accessibility} from './Accessibility.js';
@@ -50,54 +50,41 @@ import {
 } from './Connection.js';
 import {ConsoleMessage, ConsoleMessageType} from './ConsoleMessage.js';
 import {Coverage} from './Coverage.js';
+import {DeviceRequestPrompt} from './DeviceRequestPrompt.js';
 import {Dialog} from './Dialog.js';
 import {EmulationManager} from './EmulationManager.js';
+import {TargetCloseError} from './Errors.js';
 import {FileChooser} from './FileChooser.js';
-import {
-  Frame,
-  FrameAddScriptTagOptions,
-  FrameAddStyleTagOptions,
-  FrameWaitForFunctionOptions,
-} from './Frame.js';
 import {FrameManager, FrameManagerEmittedEvents} from './FrameManager.js';
-import {HTTPRequest} from './HTTPRequest.js';
-import {Keyboard, Mouse, MouseButton, Touchscreen} from './Input.js';
-import {WaitForSelectorOptions} from './IsolatedWorld.js';
+import {CDPKeyboard, CDPMouse, CDPTouchscreen} from './Input.js';
 import {MAIN_WORLD} from './IsolatedWorlds.js';
 import {
   Credentials,
   NetworkConditions,
   NetworkManagerEmittedEvents,
 } from './NetworkManager.js';
-import {LowerCasePaperFormat, PDFOptions, _paperFormats} from './PDFOptions.js';
+import {PDFOptions} from './PDFOptions.js';
 import {Viewport} from './PuppeteerViewport.js';
-import {Target} from './Target.js';
+import {CDPTarget} from './Target.js';
 import {TargetManagerEmittedEvents} from './TargetManager.js';
 import {TaskQueue} from './TaskQueue.js';
 import {TimeoutSettings} from './TimeoutSettings.js';
 import {Tracing} from './Tracing.js';
+import {BindingPayload, EvaluateFunc, HandleFor} from './types.js';
 import {
-  BindingPayload,
-  EvaluateFunc,
-  EvaluateFuncWith,
-  HandleFor,
-  NodeFor,
-} from './types.js';
-import {
+  createClientError,
   createJSHandle,
   debugError,
   evaluationString,
-  getExceptionMessage,
   getReadableAsBuffer,
   getReadableFromProtocolStream,
-  importFS,
-  isNumber,
   isString,
   pageBindingInitString,
   releaseObject,
   valueFromRemoteObject,
   waitForEvent,
   waitWithTimeout,
+  withSourcePuppeteerURLIfNone,
 } from './util.js';
 import {WebWorker} from './WebWorker.js';
 
@@ -110,7 +97,7 @@ export class CDPPage extends Page {
    */
   static async _create(
     client: CDPSession,
-    target: Target,
+    target: CDPTarget,
     ignoreHTTPSErrors: boolean,
     defaultViewport: Viewport | null,
     screenshotTaskQueue: TaskQueue
@@ -138,24 +125,24 @@ export class CDPPage extends Page {
 
   #closed = false;
   #client: CDPSession;
-  #target: Target;
-  #keyboard: Keyboard;
-  #mouse: Mouse;
+  #target: CDPTarget;
+  #keyboard: CDPKeyboard;
+  #mouse: CDPMouse;
   #timeoutSettings = new TimeoutSettings();
-  #touchscreen: Touchscreen;
+  #touchscreen: CDPTouchscreen;
   #accessibility: Accessibility;
   #frameManager: FrameManager;
   #emulationManager: EmulationManager;
   #tracing: Tracing;
   #bindings = new Map<string, Binding>();
+  #exposedFunctions = new Map<string, string>();
   #coverage: Coverage;
-  #javascriptEnabled = true;
   #viewport: Viewport | null;
   #screenshotTaskQueue: TaskQueue;
   #workers = new Map<string, WebWorker>();
-  #fileChooserPromises = new Set<DeferredPromise<FileChooser>>();
-
-  #disconnectPromise?: Promise<Error>;
+  #fileChooserDeferreds = new Set<Deferred<FileChooser>>();
+  #sessionCloseDeferred = Deferred.create<TargetCloseError>();
+  #serviceWorkerBypassed = false;
   #userDragInterceptionEnabled = false;
 
   /**
@@ -163,16 +150,16 @@ export class CDPPage extends Page {
    */
   constructor(
     client: CDPSession,
-    target: Target,
+    target: CDPTarget,
     ignoreHTTPSErrors: boolean,
     screenshotTaskQueue: TaskQueue
   ) {
     super();
     this.#client = client;
     this.#target = target;
-    this.#keyboard = new Keyboard(client);
-    this.#mouse = new Mouse(client, this.#keyboard);
-    this.#touchscreen = new Touchscreen(client, this.#keyboard);
+    this.#keyboard = new CDPKeyboard(client);
+    this.#mouse = new CDPMouse(client, this.#keyboard);
+    this.#touchscreen = new CDPTouchscreen(client, this.#keyboard);
     this.#accessibility = new Accessibility(client);
     this.#frameManager = new FrameManager(
       client,
@@ -224,6 +211,12 @@ export class CDPPage extends Page {
       return this.emit(PageEmittedEvents.RequestFinished, event);
     });
 
+    client.once(CDPSessionEmittedEvents.Disconnected, () => {
+      return this.#sessionCloseDeferred.resolve(
+        new TargetCloseError('Target closed')
+      );
+    });
+
     client.on('Page.domContentEventFired', () => {
       return this.emit(PageEmittedEvents.DOMContentLoaded);
     });
@@ -254,20 +247,26 @@ export class CDPPage extends Page {
     client.on('Page.fileChooserOpened', event => {
       return this.#onFileChooser(event);
     });
-    this.#target._isClosedPromise.then(() => {
-      this.#target
-        ._targetManager()
-        .removeTargetInterceptor(this.#client, this.#onAttachedToTarget);
+    this.#target._isClosedDeferred
+      .valueOrThrow()
+      .then(() => {
+        this.#target
+          ._targetManager()
+          .removeTargetInterceptor(this.#client, this.#onAttachedToTarget);
 
-      this.#target
-        ._targetManager()
-        .off(TargetManagerEmittedEvents.TargetGone, this.#onDetachedFromTarget);
-      this.emit(PageEmittedEvents.Close);
-      this.#closed = true;
-    });
+        this.#target
+          ._targetManager()
+          .off(
+            TargetManagerEmittedEvents.TargetGone,
+            this.#onDetachedFromTarget
+          );
+        this.emit(PageEmittedEvents.Close);
+        this.#closed = true;
+      })
+      .catch(debugError);
   }
 
-  #onDetachedFromTarget = (target: Target) => {
+  #onDetachedFromTarget = (target: CDPTarget) => {
     const sessionId = target._session()?.id();
     const worker = this.#workers.get(sessionId!);
     if (!worker) {
@@ -277,7 +276,7 @@ export class CDPPage extends Page {
     this.emit(PageEmittedEvents.WorkerDestroyed, worker);
   };
 
-  #onAttachedToTarget = (createdTarget: Target) => {
+  #onAttachedToTarget = (createdTarget: CDPTarget) => {
     this.#frameManager.onAttachedToTarget(createdTarget);
     if (createdTarget._getTargetInfo().type === 'worker') {
       const session = createdTarget._session();
@@ -320,7 +319,7 @@ export class CDPPage extends Page {
   async #onFileChooser(
     event: Protocol.Page.FileChooserOpenedEvent
   ): Promise<void> {
-    if (!this.#fileChooserPromises.size) {
+    if (!this.#fileChooserDeferreds.size) {
       return;
     }
 
@@ -333,10 +332,10 @@ export class CDPPage extends Page {
     )) as ElementHandle<HTMLInputElement>;
 
     const fileChooser = new FileChooser(handle, event);
-    for (const promise of this.#fileChooserPromises) {
+    for (const promise of this.#fileChooserDeferreds) {
       promise.resolve(fileChooser);
     }
-    this.#fileChooserPromises.clear();
+    this.#fileChooserDeferreds.clear();
   }
 
   /**
@@ -346,65 +345,49 @@ export class CDPPage extends Page {
     return this.#client;
   }
 
+  override isServiceWorkerBypassed(): boolean {
+    return this.#serviceWorkerBypassed;
+  }
+
   override isDragInterceptionEnabled(): boolean {
     return this.#userDragInterceptionEnabled;
   }
 
   override isJavaScriptEnabled(): boolean {
-    return this.#javascriptEnabled;
+    return this.#emulationManager.javascriptEnabled;
   }
 
   override waitForFileChooser(
     options: WaitTimeoutOptions = {}
   ): Promise<FileChooser> {
-    const needsEnable = this.#fileChooserPromises.size === 0;
+    const needsEnable = this.#fileChooserDeferreds.size === 0;
     const {timeout = this.#timeoutSettings.timeout()} = options;
-    const promise = createDeferredPromise<FileChooser>({
+    const deferred = Deferred.create<FileChooser>({
       message: `Waiting for \`FileChooser\` failed: ${timeout}ms exceeded`,
       timeout,
     });
-    this.#fileChooserPromises.add(promise);
+    this.#fileChooserDeferreds.add(deferred);
     let enablePromise: Promise<void> | undefined;
     if (needsEnable) {
       enablePromise = this.#client.send('Page.setInterceptFileChooserDialog', {
         enabled: true,
       });
     }
-    return Promise.all([promise, enablePromise])
+    return Promise.all([deferred.valueOrThrow(), enablePromise])
       .then(([result]) => {
         return result;
       })
       .catch(error => {
-        this.#fileChooserPromises.delete(promise);
+        this.#fileChooserDeferreds.delete(deferred);
         throw error;
       });
   }
 
   override async setGeolocation(options: GeolocationOptions): Promise<void> {
-    const {longitude, latitude, accuracy = 0} = options;
-    if (longitude < -180 || longitude > 180) {
-      throw new Error(
-        `Invalid longitude "${longitude}": precondition -180 <= LONGITUDE <= 180 failed.`
-      );
-    }
-    if (latitude < -90 || latitude > 90) {
-      throw new Error(
-        `Invalid latitude "${latitude}": precondition -90 <= LATITUDE <= 90 failed.`
-      );
-    }
-    if (accuracy < 0) {
-      throw new Error(
-        `Invalid accuracy "${accuracy}": precondition 0 <= ACCURACY failed.`
-      );
-    }
-    await this.#client.send('Emulation.setGeolocationOverride', {
-      longitude,
-      latitude,
-      accuracy,
-    });
+    return await this.#emulationManager.setGeolocation(options);
   }
 
-  override target(): Target {
+  override target(): CDPTarget {
     return this.#target;
   }
 
@@ -439,11 +422,11 @@ export class CDPPage extends Page {
     return this.#frameManager.mainFrame();
   }
 
-  override get keyboard(): Keyboard {
+  override get keyboard(): CDPKeyboard {
     return this.#keyboard;
   }
 
-  override get touchscreen(): Touchscreen {
+  override get touchscreen(): CDPTouchscreen {
     return this.#touchscreen;
   }
 
@@ -469,6 +452,11 @@ export class CDPPage extends Page {
 
   override async setRequestInterception(value: boolean): Promise<void> {
     return this.#frameManager.networkManager.setRequestInterception(value);
+  }
+
+  override async setBypassServiceWorker(bypass: boolean): Promise<void> {
+    this.#serviceWorkerBypassed = bypass;
+    return this.#client.send('Network.setBypassServiceWorker', {bypass});
   }
 
   override async setDragInterception(enabled: boolean): Promise<void> {
@@ -500,25 +488,17 @@ export class CDPPage extends Page {
     return this.#timeoutSettings.timeout();
   }
 
-  override async $<Selector extends string>(
-    selector: Selector
-  ): Promise<ElementHandle<NodeFor<Selector>> | null> {
-    return this.mainFrame().$(selector);
-  }
-
-  override async $$<Selector extends string>(
-    selector: Selector
-  ): Promise<Array<ElementHandle<NodeFor<Selector>>>> {
-    return this.mainFrame().$$(selector);
-  }
-
   override async evaluateHandle<
     Params extends unknown[],
-    Func extends EvaluateFunc<Params> = EvaluateFunc<Params>
+    Func extends EvaluateFunc<Params> = EvaluateFunc<Params>,
   >(
     pageFunction: Func | string,
     ...args: Params
   ): Promise<HandleFor<Awaited<ReturnType<Func>>>> {
+    pageFunction = withSourcePuppeteerURLIfNone(
+      this.evaluateHandle.name,
+      pageFunction
+    );
     const context = await this.mainFrame().executionContext();
     return context.evaluateHandle(pageFunction, ...args);
   }
@@ -536,40 +516,6 @@ export class CDPPage extends Page {
       prototypeObjectId: prototypeHandle.id,
     });
     return createJSHandle(context, response.objects) as HandleFor<Prototype[]>;
-  }
-
-  override async $eval<
-    Selector extends string,
-    Params extends unknown[],
-    Func extends EvaluateFuncWith<NodeFor<Selector>, Params> = EvaluateFuncWith<
-      NodeFor<Selector>,
-      Params
-    >
-  >(
-    selector: Selector,
-    pageFunction: Func | string,
-    ...args: Params
-  ): Promise<Awaited<ReturnType<Func>>> {
-    return this.mainFrame().$eval(selector, pageFunction, ...args);
-  }
-
-  override async $$eval<
-    Selector extends string,
-    Params extends unknown[],
-    Func extends EvaluateFuncWith<
-      Array<NodeFor<Selector>>,
-      Params
-    > = EvaluateFuncWith<Array<NodeFor<Selector>>, Params>
-  >(
-    selector: Selector,
-    pageFunction: Func | string,
-    ...args: Params
-  ): Promise<Awaited<ReturnType<Func>>> {
-    return this.mainFrame().$$eval(selector, pageFunction, ...args);
-  }
-
-  override async $x(expression: string): Promise<Array<ElementHandle<Node>>> {
-    return this.mainFrame().$x(expression);
   }
 
   override async cookies(
@@ -632,24 +578,6 @@ export class CDPPage extends Page {
     }
   }
 
-  override async addScriptTag(
-    options: FrameAddScriptTagOptions
-  ): Promise<ElementHandle<HTMLScriptElement>> {
-    return this.mainFrame().addScriptTag(options);
-  }
-
-  override async addStyleTag(
-    options: Omit<FrameAddStyleTagOptions, 'url'>
-  ): Promise<ElementHandle<HTMLStyleElement>>;
-  override async addStyleTag(
-    options: FrameAddStyleTagOptions
-  ): Promise<ElementHandle<HTMLLinkElement>>;
-  override async addStyleTag(
-    options: FrameAddStyleTagOptions
-  ): Promise<ElementHandle<HTMLStyleElement | HTMLLinkElement>> {
-    return this.mainFrame().addStyleTag(options);
-  }
-
   override async exposeFunction(
     name: string,
     pptrFunction: Function | {default: Function}
@@ -679,15 +607,48 @@ export class CDPPage extends Page {
     this.#bindings.set(name, binding);
 
     const expression = pageBindingInitString('exposedFun', name);
-    await this.#client.send('Runtime.addBinding', {name: name});
-    await this.#client.send('Page.addScriptToEvaluateOnNewDocument', {
-      source: expression,
-    });
+    await this.#client.send('Runtime.addBinding', {name});
+    const {identifier} = await this.#client.send(
+      'Page.addScriptToEvaluateOnNewDocument',
+      {
+        source: expression,
+      }
+    );
+
+    this.#exposedFunctions.set(name, identifier);
+
     await Promise.all(
       this.frames().map(frame => {
         return frame.evaluate(expression).catch(debugError);
       })
     );
+  }
+
+  override async removeExposedFunction(name: string): Promise<void> {
+    const exposedFun = this.#exposedFunctions.get(name);
+    if (!exposedFun) {
+      throw new Error(
+        `Failed to remove page binding with name ${name}: window['${name}'] does not exists!`
+      );
+    }
+
+    await this.#client.send('Runtime.removeBinding', {name});
+    await this.removeScriptToEvaluateOnNewDocument(exposedFun);
+
+    await Promise.all(
+      this.frames().map(frame => {
+        return frame
+          .evaluate(name => {
+            // Removes the dangling Puppeteer binding wrapper.
+            // @ts-expect-error: In a different context.
+            globalThis[name] = undefined;
+          }, name)
+          .catch(debugError);
+      })
+    );
+
+    this.#exposedFunctions.delete(name);
+    this.#bindings.delete(name);
   }
 
   override async authenticate(credentials: Credentials): Promise<void> {
@@ -736,10 +697,7 @@ export class CDPPage extends Page {
   }
 
   #handleException(exceptionDetails: Protocol.Runtime.ExceptionDetails): void {
-    const message = getExceptionMessage(exceptionDetails);
-    const err = new Error(message);
-    err.stack = ''; // Don't report clientside error with a node stack attached
-    this.emit(PageEmittedEvents.PageError, err);
+    this.emit(PageEmittedEvents.PageError, createClientError(exceptionDetails));
   }
 
   async #onConsoleAPI(
@@ -871,42 +829,26 @@ export class CDPPage extends Page {
     this.emit(PageEmittedEvents.Dialog, dialog);
   }
 
-  /**
-   * Resets default white background
-   */
-  async #resetDefaultBackgroundColor() {
-    await this.#client.send('Emulation.setDefaultBackgroundColorOverride');
-  }
-
-  /**
-   * Hides default white background
-   */
-  async #setTransparentBackgroundColor(): Promise<void> {
-    await this.#client.send('Emulation.setDefaultBackgroundColorOverride', {
-      color: {r: 0, g: 0, b: 0, a: 0},
-    });
-  }
-
   override url(): string {
     return this.mainFrame().url();
   }
 
   override async content(): Promise<string> {
-    return await this.#frameManager.mainFrame().content();
+    return await this.mainFrame().content();
   }
 
   override async setContent(
     html: string,
     options: WaitForOptions = {}
   ): Promise<void> {
-    await this.#frameManager.mainFrame().setContent(html, options);
+    await this.mainFrame().setContent(html, options);
   }
 
   override async goto(
     url: string,
     options: WaitForOptions & {referer?: string; referrerPolicy?: string} = {}
   ): Promise<HTTPResponse | null> {
-    return await this.#frameManager.mainFrame().goto(url, options);
+    return await this.mainFrame().goto(url, options);
   }
 
   override async reload(
@@ -920,21 +862,8 @@ export class CDPPage extends Page {
     return result[0];
   }
 
-  override async waitForNavigation(
-    options: WaitForOptions = {}
-  ): Promise<HTTPResponse | null> {
-    return await this.#frameManager.mainFrame().waitForNavigation(options);
-  }
-
-  #sessionClosePromise(): Promise<Error> {
-    if (!this.#disconnectPromise) {
-      this.#disconnectPromise = new Promise(fulfill => {
-        return this.#client.once(CDPSessionEmittedEvents.Disconnected, () => {
-          return fulfill(new Error('Target closed'));
-        });
-      });
-    }
-    return this.#disconnectPromise;
+  override async createCDPSession(): Promise<CDPSession> {
+    return await this.target().createCDPSession();
   }
 
   override async waitForRequest(
@@ -955,7 +884,7 @@ export class CDPPage extends Page {
         return false;
       },
       timeout,
-      this.#sessionClosePromise()
+      this.#sessionCloseDeferred.valueOrThrow()
     );
   }
 
@@ -979,7 +908,7 @@ export class CDPPage extends Page {
         return false;
       },
       timeout,
-      this.#sessionClosePromise()
+      this.#sessionCloseDeferred.valueOrThrow()
     );
   }
 
@@ -988,70 +917,11 @@ export class CDPPage extends Page {
   ): Promise<void> {
     const {idleTime = 500, timeout = this.#timeoutSettings.timeout()} = options;
 
-    const networkManager = this.#frameManager.networkManager;
-
-    let idleResolveCallback: () => void;
-    const idlePromise = new Promise<void>(resolve => {
-      idleResolveCallback = resolve;
-    });
-
-    let abortRejectCallback: (error: Error) => void;
-    const abortPromise = new Promise<Error>((_, reject) => {
-      abortRejectCallback = reject;
-    });
-
-    let idleTimer: NodeJS.Timeout;
-    const onIdle = () => {
-      return idleResolveCallback();
-    };
-
-    const cleanup = () => {
-      idleTimer && clearTimeout(idleTimer);
-      abortRejectCallback(new Error('abort'));
-    };
-
-    const evaluate = () => {
-      idleTimer && clearTimeout(idleTimer);
-      if (networkManager.numRequestsInProgress() === 0) {
-        idleTimer = setTimeout(onIdle, idleTime);
-      }
-    };
-
-    evaluate();
-
-    const eventHandler = () => {
-      evaluate();
-      return false;
-    };
-
-    const listenToEvent = (event: symbol) => {
-      return waitForEvent(
-        networkManager,
-        event,
-        eventHandler,
-        timeout,
-        abortPromise
-      );
-    };
-
-    const eventPromises = [
-      listenToEvent(NetworkManagerEmittedEvents.Request),
-      listenToEvent(NetworkManagerEmittedEvents.Response),
-    ];
-
-    await Promise.race([
-      idlePromise,
-      ...eventPromises,
-      this.#sessionClosePromise(),
-    ]).then(
-      r => {
-        cleanup();
-        return r;
-      },
-      error => {
-        cleanup();
-        throw error;
-      }
+    await this._waitForNetworkIdle(
+      this.#frameManager.networkManager,
+      idleTime,
+      timeout,
+      this.#sessionCloseDeferred
     );
   }
 
@@ -1076,20 +946,20 @@ export class CDPPage extends Page {
       };
     }
 
-    const eventRace: Promise<Frame> = Promise.race([
+    const eventRace: Promise<Frame> = Deferred.race([
       waitForEvent(
         this.#frameManager,
         FrameManagerEmittedEvents.FrameAttached,
         predicate,
         timeout,
-        this.#sessionClosePromise()
+        this.#sessionCloseDeferred.valueOrThrow()
       ),
       waitForEvent(
         this.#frameManager,
         FrameManagerEmittedEvents.FrameNavigated,
         predicate,
         timeout,
-        this.#sessionClosePromise()
+        this.#sessionCloseDeferred.valueOrThrow()
       ),
       ...this.frames().map(async frame => {
         if (await predicate(frame)) {
@@ -1135,13 +1005,7 @@ export class CDPPage extends Page {
   }
 
   override async setJavaScriptEnabled(enabled: boolean): Promise<void> {
-    if (this.#javascriptEnabled === enabled) {
-      return;
-    }
-    this.#javascriptEnabled = enabled;
-    await this.#client.send('Emulation.setScriptExecutionDisabled', {
-      value: !enabled,
-    });
+    return await this.#emulationManager.setJavaScriptEnabled(enabled);
   }
 
   override async setBypassCSP(enabled: boolean): Promise<void> {
@@ -1149,100 +1013,34 @@ export class CDPPage extends Page {
   }
 
   override async emulateMediaType(type?: string): Promise<void> {
-    assert(
-      type === 'screen' ||
-        type === 'print' ||
-        (type ?? undefined) === undefined,
-      'Unsupported media type: ' + type
-    );
-    await this.#client.send('Emulation.setEmulatedMedia', {
-      media: type || '',
-    });
+    return await this.#emulationManager.emulateMediaType(type);
   }
 
   override async emulateCPUThrottling(factor: number | null): Promise<void> {
-    assert(
-      factor === null || factor >= 1,
-      'Throttling rate should be greater or equal to 1'
-    );
-    await this.#client.send('Emulation.setCPUThrottlingRate', {
-      rate: factor !== null ? factor : 1,
-    });
+    return await this.#emulationManager.emulateCPUThrottling(factor);
   }
 
   override async emulateMediaFeatures(
     features?: MediaFeature[]
   ): Promise<void> {
-    if (!features) {
-      await this.#client.send('Emulation.setEmulatedMedia', {});
-    }
-    if (Array.isArray(features)) {
-      for (const mediaFeature of features) {
-        const name = mediaFeature.name;
-        assert(
-          /^(?:prefers-(?:color-scheme|reduced-motion)|color-gamut)$/.test(
-            name
-          ),
-          'Unsupported media feature: ' + name
-        );
-      }
-      await this.#client.send('Emulation.setEmulatedMedia', {
-        features: features,
-      });
-    }
+    return await this.#emulationManager.emulateMediaFeatures(features);
   }
 
   override async emulateTimezone(timezoneId?: string): Promise<void> {
-    try {
-      await this.#client.send('Emulation.setTimezoneOverride', {
-        timezoneId: timezoneId || '',
-      });
-    } catch (error) {
-      if (isErrorLike(error) && error.message.includes('Invalid timezone')) {
-        throw new Error(`Invalid timezone ID: ${timezoneId}`);
-      }
-      throw error;
-    }
+    return await this.#emulationManager.emulateTimezone(timezoneId);
   }
 
   override async emulateIdleState(overrides?: {
     isUserActive: boolean;
     isScreenUnlocked: boolean;
   }): Promise<void> {
-    if (overrides) {
-      await this.#client.send('Emulation.setIdleOverride', {
-        isUserActive: overrides.isUserActive,
-        isScreenUnlocked: overrides.isScreenUnlocked,
-      });
-    } else {
-      await this.#client.send('Emulation.clearIdleOverride');
-    }
+    return await this.#emulationManager.emulateIdleState(overrides);
   }
 
   override async emulateVisionDeficiency(
     type?: Protocol.Emulation.SetEmulatedVisionDeficiencyRequest['type']
   ): Promise<void> {
-    const visionDeficiencies = new Set<
-      Protocol.Emulation.SetEmulatedVisionDeficiencyRequest['type']
-    >([
-      'none',
-      'achromatopsia',
-      'blurredVision',
-      'deuteranopia',
-      'protanopia',
-      'tritanopia',
-    ]);
-    try {
-      assert(
-        !type || visionDeficiencies.has(type),
-        `Unsupported vision deficiency: ${type}`
-      );
-      await this.#client.send('Emulation.setEmulatedVisionDeficiency', {
-        type: type || 'none',
-      });
-    } catch (error) {
-      throw error;
-    }
+    return await this.#emulationManager.emulateVisionDeficiency(type);
   }
 
   override async setViewport(viewport: Viewport): Promise<void> {
@@ -1259,21 +1057,41 @@ export class CDPPage extends Page {
 
   override async evaluate<
     Params extends unknown[],
-    Func extends EvaluateFunc<Params> = EvaluateFunc<Params>
+    Func extends EvaluateFunc<Params> = EvaluateFunc<Params>,
   >(
     pageFunction: Func | string,
     ...args: Params
   ): Promise<Awaited<ReturnType<Func>>> {
-    return this.#frameManager.mainFrame().evaluate(pageFunction, ...args);
+    pageFunction = withSourcePuppeteerURLIfNone(
+      this.evaluate.name,
+      pageFunction
+    );
+    return this.mainFrame().evaluate(pageFunction, ...args);
   }
 
   override async evaluateOnNewDocument<
     Params extends unknown[],
-    Func extends (...args: Params) => unknown = (...args: Params) => unknown
-  >(pageFunction: Func | string, ...args: Params): Promise<void> {
+    Func extends (...args: Params) => unknown = (...args: Params) => unknown,
+  >(
+    pageFunction: Func | string,
+    ...args: Params
+  ): Promise<NewDocumentScriptEvaluation> {
     const source = evaluationString(pageFunction, ...args);
-    await this.#client.send('Page.addScriptToEvaluateOnNewDocument', {
-      source,
+    const {identifier} = await this.#client.send(
+      'Page.addScriptToEvaluateOnNewDocument',
+      {
+        source,
+      }
+    );
+
+    return {identifier};
+  }
+
+  override async removeScriptToEvaluateOnNewDocument(
+    identifier: string
+  ): Promise<void> {
+    await this.#client.send('Page.removeScriptToEvaluateOnNewDocument', {
+      identifier,
     });
   }
 
@@ -1425,11 +1243,12 @@ export class CDPPage extends Page {
     const shouldSetDefaultBackground =
       options.omitBackground && (format === 'png' || format === 'webp');
     if (shouldSetDefaultBackground) {
-      await this.#setTransparentBackgroundColor();
+      await this.#emulationManager.setTransparentBackgroundColor();
     }
 
     const result = await this.#client.send('Page.captureScreenshot', {
       format,
+      optimizeForSpeed: options.optimizeForSpeed,
       quality: options.quality,
       clip: clip && {
         ...clip,
@@ -1439,31 +1258,20 @@ export class CDPPage extends Page {
       fromSurface,
     });
     if (shouldSetDefaultBackground) {
-      await this.#resetDefaultBackgroundColor();
+      await this.#emulationManager.resetDefaultBackgroundColor();
     }
 
     if (options.fullPage && this.#viewport) {
       await this.setViewport(this.#viewport);
     }
 
-    const buffer =
-      options.encoding === 'base64'
-        ? result.data
-        : Buffer.from(result.data, 'base64');
-
-    if (options.path) {
-      try {
-        const fs = (await importFS()).promises;
-        await fs.writeFile(options.path, buffer);
-      } catch (error) {
-        if (error instanceof TypeError) {
-          throw new Error(
-            'Screenshots can only be written to a file path in a Node-like environment.'
-          );
-        }
-        throw error;
-      }
+    if (options.encoding === 'base64') {
+      return result.data;
     }
+
+    const buffer = Buffer.from(result.data, 'base64');
+    await this._maybeWriteBufferToFile(options.path, buffer);
+
     return buffer;
 
     function processClip(clip: ScreenshotClip): ScreenshotClip {
@@ -1477,40 +1285,23 @@ export class CDPPage extends Page {
 
   override async createPDFStream(options: PDFOptions = {}): Promise<Readable> {
     const {
-      scale = 1,
-      displayHeaderFooter = false,
-      headerTemplate = '',
-      footerTemplate = '',
-      printBackground = false,
-      landscape = false,
-      pageRanges = '',
-      preferCSSPageSize = false,
-      margin = {},
-      omitBackground = false,
-      timeout = 30000,
-    } = options;
-
-    let paperWidth = 8.5;
-    let paperHeight = 11;
-    if (options.format) {
-      const format =
-        _paperFormats[options.format.toLowerCase() as LowerCasePaperFormat];
-      assert(format, 'Unknown paper format: ' + options.format);
-      paperWidth = format.width;
-      paperHeight = format.height;
-    } else {
-      paperWidth = convertPrintParameterToInches(options.width) || paperWidth;
-      paperHeight =
-        convertPrintParameterToInches(options.height) || paperHeight;
-    }
-
-    const marginTop = convertPrintParameterToInches(margin.top) || 0;
-    const marginLeft = convertPrintParameterToInches(margin.left) || 0;
-    const marginBottom = convertPrintParameterToInches(margin.bottom) || 0;
-    const marginRight = convertPrintParameterToInches(margin.right) || 0;
+      landscape,
+      displayHeaderFooter,
+      headerTemplate,
+      footerTemplate,
+      printBackground,
+      scale,
+      width: paperWidth,
+      height: paperHeight,
+      margin,
+      pageRanges,
+      preferCSSPageSize,
+      omitBackground,
+      timeout,
+    } = this._getPDFOptions(options);
 
     if (omitBackground) {
-      await this.#setTransparentBackgroundColor();
+      await this.#emulationManager.setTransparentBackgroundColor();
     }
 
     const printCommandPromise = this.#client.send('Page.printToPDF', {
@@ -1523,10 +1314,10 @@ export class CDPPage extends Page {
       scale,
       paperWidth,
       paperHeight,
-      marginTop,
-      marginBottom,
-      marginLeft,
-      marginRight,
+      marginTop: margin.top,
+      marginBottom: margin.bottom,
+      marginLeft: margin.left,
+      marginRight: margin.right,
       pageRanges,
       preferCSSPageSize,
     });
@@ -1538,7 +1329,7 @@ export class CDPPage extends Page {
     );
 
     if (omitBackground) {
-      await this.#resetDefaultBackgroundColor();
+      await this.#emulationManager.resetDefaultBackgroundColor();
     }
 
     assert(result.stream, '`stream` is missing from `Page.printToPDF');
@@ -1572,7 +1363,7 @@ export class CDPPage extends Page {
       await connection.send('Target.closeTarget', {
         targetId: this.#target._targetId,
       });
-      await this.#target._isClosedPromise;
+      await this.#target._isClosedDeferred.valueOrThrow();
     }
   }
 
@@ -1580,72 +1371,37 @@ export class CDPPage extends Page {
     return this.#closed;
   }
 
-  override get mouse(): Mouse {
+  override get mouse(): CDPMouse {
     return this.#mouse;
   }
 
-  override click(
-    selector: string,
-    options: {
-      delay?: number;
-      button?: MouseButton;
-      clickCount?: number;
-    } = {}
-  ): Promise<void> {
-    return this.mainFrame().click(selector, options);
-  }
-
-  override focus(selector: string): Promise<void> {
-    return this.mainFrame().focus(selector);
-  }
-
-  override hover(selector: string): Promise<void> {
-    return this.mainFrame().hover(selector);
-  }
-
-  override select(selector: string, ...values: string[]): Promise<string[]> {
-    return this.mainFrame().select(selector, ...values);
-  }
-
-  override tap(selector: string): Promise<void> {
-    return this.mainFrame().tap(selector);
-  }
-
-  override type(
-    selector: string,
-    text: string,
-    options?: {delay: number}
-  ): Promise<void> {
-    return this.mainFrame().type(selector, text, options);
-  }
-
-  override waitForTimeout(milliseconds: number): Promise<void> {
-    return this.mainFrame().waitForTimeout(milliseconds);
-  }
-
-  override async waitForSelector<Selector extends string>(
-    selector: Selector,
-    options: WaitForSelectorOptions = {}
-  ): Promise<ElementHandle<NodeFor<Selector>> | null> {
-    return await this.mainFrame().waitForSelector(selector, options);
-  }
-
-  override waitForXPath(
-    xpath: string,
-    options: WaitForSelectorOptions = {}
-  ): Promise<ElementHandle<Node> | null> {
-    return this.mainFrame().waitForXPath(xpath, options);
-  }
-
-  override waitForFunction<
-    Params extends unknown[],
-    Func extends EvaluateFunc<Params> = EvaluateFunc<Params>
-  >(
-    pageFunction: Func | string,
-    options: FrameWaitForFunctionOptions = {},
-    ...args: Params
-  ): Promise<HandleFor<Awaited<ReturnType<Func>>>> {
-    return this.mainFrame().waitForFunction(pageFunction, options, ...args);
+  /**
+   * This method is typically coupled with an action that triggers a device
+   * request from an api such as WebBluetooth.
+   *
+   * :::caution
+   *
+   * This must be called before the device request is made. It will not return a
+   * currently active device prompt.
+   *
+   * :::
+   *
+   * @example
+   *
+   * ```ts
+   * const [devicePrompt] = Promise.all([
+   *   page.waitForDevicePrompt(),
+   *   page.click('#connect-bluetooth'),
+   * ]);
+   * await devicePrompt.select(
+   *   await devicePrompt.waitForDevice(({name}) => name.includes('My Device'))
+   * );
+   * ```
+   */
+  override waitForDevicePrompt(
+    options: WaitTimeoutOptions = {}
+  ): Promise<DeviceRequestPrompt> {
+    return this.mainFrame().waitForDevicePrompt(options);
   }
 }
 
@@ -1664,43 +1420,3 @@ const supportedMetrics = new Set<string>([
   'JSHeapUsedSize',
   'JSHeapTotalSize',
 ]);
-
-const unitToPixels = {
-  px: 1,
-  in: 96,
-  cm: 37.8,
-  mm: 3.78,
-};
-
-function convertPrintParameterToInches(
-  parameter?: string | number
-): number | undefined {
-  if (typeof parameter === 'undefined') {
-    return undefined;
-  }
-  let pixels;
-  if (isNumber(parameter)) {
-    // Treat numbers as pixel values to be aligned with phantom's paperSize.
-    pixels = parameter;
-  } else if (isString(parameter)) {
-    const text = parameter;
-    let unit = text.substring(text.length - 2).toLowerCase();
-    let valueText = '';
-    if (unit in unitToPixels) {
-      valueText = text.substring(0, text.length - 2);
-    } else {
-      // In case of unknown unit try to parse the whole parameter as number of pixels.
-      // This is consistent with phantom's paperSize behavior.
-      unit = 'px';
-      valueText = text;
-    }
-    const value = Number(valueText);
-    assert(!isNaN(value), 'Failed to parse parameter value: ' + text);
-    pixels = value * unitToPixels[unit as keyof typeof unitToPixels];
-  } else {
-    throw new Error(
-      'page.pdf() Cannot handle parameter type: ' + typeof parameter
-    );
-  }
-  return pixels / 96;
-}

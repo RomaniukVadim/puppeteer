@@ -19,9 +19,13 @@ import {Protocol} from 'devtools-protocol';
 import {assert} from '../util/assert.js';
 
 import {CDPSession} from './Connection.js';
-import {EVALUATION_SCRIPT_URL} from './ExecutionContext.js';
-import {addEventListener, debugError, PuppeteerEventListener} from './util.js';
-import {removeEventListeners} from './util.js';
+import {
+  addEventListener,
+  debugError,
+  PuppeteerEventListener,
+  PuppeteerURL,
+  removeEventListeners,
+} from './util.js';
 
 /**
  * @internal
@@ -95,7 +99,7 @@ export interface CSSCoverageOptions {
 }
 
 /**
- * The Coverage class provides methods to gathers information about parts of
+ * The Coverage class provides methods to gather information about parts of
  * JavaScript and CSS that were used by the page.
  *
  * @remarks
@@ -158,7 +162,7 @@ export class Coverage {
   }
 
   /**
-   * @returns Promise that resolves to the array of coverage reports for
+   * Promise that resolves to the array of coverage reports for
    * all scripts.
    *
    * @remarks
@@ -179,8 +183,9 @@ export class Coverage {
   }
 
   /**
-   * @returns Promise that resolves to the array of coverage reports
+   * Promise that resolves to the array of coverage reports
    * for all stylesheets.
+   *
    * @remarks
    * CSS Coverage doesn't include dynamically injected style tags
    * without sourceURLs.
@@ -263,7 +268,7 @@ export class JSCoverage {
     event: Protocol.Debugger.ScriptParsedEvent
   ): Promise<void> {
     // Ignore puppeteer-injected scripts
-    if (event.url === EVALUATION_SCRIPT_URL) {
+    if (PuppeteerURL.isPuppeteerURL(event.url)) {
       return;
     }
     // Ignore other anonymous scripts unless the reportAnonymousScripts option is true.

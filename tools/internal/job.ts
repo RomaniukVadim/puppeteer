@@ -4,7 +4,7 @@ import {mkdir, readFile, stat, writeFile} from 'fs/promises';
 import {tmpdir} from 'os';
 import {dirname, join} from 'path';
 
-import {globSync, hasMagic} from 'glob';
+import {hasMagic, globSync} from 'glob';
 
 interface JobContext {
   name: string;

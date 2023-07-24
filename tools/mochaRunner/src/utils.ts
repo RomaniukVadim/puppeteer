@@ -44,6 +44,10 @@ export function readJSON(path: string): unknown {
   return JSON.parse(fs.readFileSync(path, 'utf-8'));
 }
 
+export function writeJSON(path: string, json: unknown): unknown {
+  return fs.writeFileSync(path, JSON.stringify(json, null, 2));
+}
+
 export function filterByPlatform<T extends {platforms: NodeJS.Platform[]}>(
   items: T[],
   platform: NodeJS.Platform
@@ -72,6 +76,16 @@ export function printSuggestions(
         return item.expectation;
       })
     );
+    if (action !== 'remove') {
+      console.log(
+        'The recommendations are based on the following applied expectations:'
+      );
+      prettyPrintJSON(
+        toPrint.map(item => {
+          return item.basedOn;
+        })
+      );
+    }
   }
 }
 
@@ -95,28 +109,19 @@ export function findEffectiveExpectationForTest(
   expectations: TestExpectation[],
   result: MochaTestResult
 ): TestExpectation | undefined {
-  return expectations
-    .filter(expectation => {
-      return (
-        '' === expectation.testIdPattern ||
-        getTestId(result.file) === expectation.testIdPattern ||
-        getTestId(result.file, result.fullTitle) === expectation.testIdPattern
-      );
-    })
-    .pop();
+  return expectations.find(expectation => {
+    return testIdMatchesExpectationPattern(result, expectation.testIdPattern);
+  });
 }
 
-type RecommendedExpectation = {
+export interface RecommendedExpectation {
   expectation: TestExpectation;
   action: 'remove' | 'add' | 'update';
-};
+  basedOn?: TestExpectation;
+}
 
 export function isWildCardPattern(testIdPattern: string): boolean {
-  testIdPattern = testIdPattern.trim();
-  return (
-    testIdPattern === '' ||
-    Boolean(testIdPattern.match(/^\[[a-zA-Z]+\.spec\]$/))
-  );
+  return testIdPattern.includes('*');
 }
 
 export function getExpectationUpdates(
@@ -127,31 +132,56 @@ export function getExpectationUpdates(
     parameters: string[];
   }
 ): RecommendedExpectation[] {
-  const output: Map<string, RecommendedExpectation> = new Map();
+  const output = new Map<string, RecommendedExpectation>();
+
+  const passesByKey = results.passes.reduce((acc, pass) => {
+    acc.add(getTestId(pass.file, pass.fullTitle));
+    return acc;
+  }, new Set());
 
   for (const pass of results.passes) {
-    // If an error occurs during a hook
-    // the error not have a file associated with it
-    if (!pass.file) {
-      continue;
-    }
-
     const expectationEntry = findEffectiveExpectationForTest(
       expectations,
       pass
     );
     if (expectationEntry && !expectationEntry.expectations.includes('PASS')) {
-      addEntry({
-        expectation: expectationEntry,
-        action: 'remove',
-      });
+      if (isWildCardPattern(expectationEntry.testIdPattern)) {
+        addEntry({
+          expectation: {
+            testIdPattern: getTestId(pass.file, pass.fullTitle),
+            platforms: context.platforms,
+            parameters: context.parameters,
+            expectations: ['PASS'],
+          },
+          action: 'add',
+          basedOn: expectationEntry,
+        });
+      } else {
+        addEntry({
+          expectation: expectationEntry,
+          action: 'remove',
+          basedOn: expectationEntry,
+        });
+      }
     }
   }
 
   for (const failure of results.failures) {
+    if (passesByKey.has(getTestId(failure.file, failure.fullTitle))) {
+      continue;
+    }
     // If an error occurs during a hook
     // the error not have a file associated with it
     if (!failure.file) {
+      addEntry({
+        expectation: {
+          testIdPattern: 'Hook failed!',
+          platforms: context.platforms,
+          parameters: context.parameters,
+          expectations: [],
+        },
+        action: 'add',
+      });
       continue;
     }
 
@@ -159,30 +189,41 @@ export function getExpectationUpdates(
       expectations,
       failure
     );
-    // If the effective explanation is a wildcard, we recommend adding a new
-    // expectation instead of updating the wildcard that might affect multiple
-    // tests.
-    if (
-      expectationEntry &&
-      !isWildCardPattern(expectationEntry.testIdPattern)
-    ) {
+    if (expectationEntry && !expectationEntry.expectations.includes('SKIP')) {
       if (
         !expectationEntry.expectations.includes(
           getTestResultForFailure(failure)
         )
       ) {
-        addEntry({
-          expectation: {
-            ...expectationEntry,
-            expectations: [
-              ...expectationEntry.expectations,
-              getTestResultForFailure(failure),
-            ],
-          },
-          action: 'update',
-        });
+        // If the effective explanation is a wildcard, we recommend adding a new
+        // expectation instead of updating the wildcard that might affect multiple
+        // tests.
+        if (isWildCardPattern(expectationEntry.testIdPattern)) {
+          addEntry({
+            expectation: {
+              testIdPattern: getTestId(failure.file, failure.fullTitle),
+              platforms: context.platforms,
+              parameters: context.parameters,
+              expectations: [getTestResultForFailure(failure)],
+            },
+            action: 'add',
+            basedOn: expectationEntry,
+          });
+        } else {
+          addEntry({
+            expectation: {
+              ...expectationEntry,
+              expectations: [
+                ...expectationEntry.expectations,
+                getTestResultForFailure(failure),
+              ],
+            },
+            action: 'update',
+            basedOn: expectationEntry,
+          });
+        }
       }
-    } else {
+    } else if (!expectationEntry) {
       addEntry({
         expectation: {
           testIdPattern: getTestId(failure.file, failure.fullTitle),
@@ -215,4 +256,23 @@ export function getTestId(file: string, fullTitle?: string): string {
   return fullTitle
     ? `[${getFilename(file)}] ${fullTitle}`
     : `[${getFilename(file)}]`;
+}
+
+export function testIdMatchesExpectationPattern(
+  test: MochaTestResult | Mocha.Test,
+  pattern: string
+): boolean {
+  const patternRegExString = pattern
+    // Replace `*` with non special character
+    .replace(/\*/g, '--STAR--')
+    // Escape special characters https://developer.mozilla.org/en-US/docs/Web/JavaScript/Guide/Regular_Expressions#escaping
+    .replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    // Replace placeholder with greedy match
+    .replace(/--STAR--/g, '(.*)?');
+  // Match beginning and end explicitly
+  const patternRegEx = new RegExp(`^${patternRegExString}$`);
+  const fullTitle =
+    typeof test.fullTitle === 'string' ? test.fullTitle : test.fullTitle();
+
+  return patternRegEx.test(getTestId(test.file ?? '', fullTitle));
 }

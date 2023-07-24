@@ -16,48 +16,38 @@
 
 import path from 'path';
 
-import {httpRequest} from '../httpUtil.js';
+import {getJSON} from '../httpUtil.js';
 
 import {BrowserPlatform, ChromeReleaseChannel} from './types.js';
-
-function archive(platform: BrowserPlatform, buildId: string): string {
-  switch (platform) {
-    case BrowserPlatform.LINUX:
-      return 'chrome-linux';
-    case BrowserPlatform.MAC_ARM:
-    case BrowserPlatform.MAC:
-      return 'chrome-mac';
-    case BrowserPlatform.WIN32:
-    case BrowserPlatform.WIN64:
-      // Windows archive name changed at r591479.
-      return parseInt(buildId, 10) > 591479 ? 'chrome-win' : 'chrome-win32';
-  }
-}
 
 function folder(platform: BrowserPlatform): string {
   switch (platform) {
     case BrowserPlatform.LINUX:
-      return 'Linux_x64';
+      return 'linux64';
     case BrowserPlatform.MAC_ARM:
-      return 'Mac_Arm';
+      return 'mac-arm64';
     case BrowserPlatform.MAC:
-      return 'Mac';
+      return 'mac-x64';
     case BrowserPlatform.WIN32:
-      return 'Win';
+      return 'win32';
     case BrowserPlatform.WIN64:
-      return 'Win_x64';
+      return 'win64';
   }
 }
 
 export function resolveDownloadUrl(
   platform: BrowserPlatform,
   buildId: string,
-  baseUrl = 'https://storage.googleapis.com/chromium-browser-snapshots'
+  baseUrl = 'https://edgedl.me.gvt1.com/edgedl/chrome/chrome-for-testing'
 ): string {
-  return `${baseUrl}/${folder(platform)}/${buildId}/${archive(
-    platform,
-    buildId
-  )}.zip`;
+  return `${baseUrl}/${resolveDownloadPath(platform, buildId).join('/')}`;
+}
+
+export function resolveDownloadPath(
+  platform: BrowserPlatform,
+  buildId: string
+): string[] {
+  return [buildId, folder(platform), `chrome-${folder(platform)}.zip`];
 }
 
 export function relativeExecutablePath(
@@ -68,54 +58,50 @@ export function relativeExecutablePath(
     case BrowserPlatform.MAC:
     case BrowserPlatform.MAC_ARM:
       return path.join(
-        'chrome-mac',
-        'Chromium.app',
+        'chrome-' + folder(platform),
+        'Google Chrome for Testing.app',
         'Contents',
         'MacOS',
-        'Chromium'
+        'Google Chrome for Testing'
       );
     case BrowserPlatform.LINUX:
-      return path.join('chrome-linux', 'chrome');
+      return path.join('chrome-linux64', 'chrome');
     case BrowserPlatform.WIN32:
     case BrowserPlatform.WIN64:
-      return path.join('chrome-win', 'chrome.exe');
+      return path.join('chrome-' + folder(platform), 'chrome.exe');
   }
 }
+
+export async function getLastKnownGoodReleaseForChannel(
+  channel: ChromeReleaseChannel
+): Promise<{version: string; revision: string}> {
+  const data = (await getJSON(
+    new URL(
+      'https://googlechromelabs.github.io/chrome-for-testing/last-known-good-versions.json'
+    )
+  )) as {
+    channels: Record<string, {version: string}>;
+  };
+
+  for (const channel of Object.keys(data.channels)) {
+    data.channels[channel.toLowerCase()] = data.channels[channel]!;
+    delete data.channels[channel];
+  }
+
+  return (
+    data as {
+      channels: {
+        [channel in ChromeReleaseChannel]: {version: string; revision: string};
+      };
+    }
+  ).channels[channel];
+}
+
 export async function resolveBuildId(
-  platform: BrowserPlatform,
-  // We will need it for other channels/keywords.
-  _channel: 'latest' = 'latest'
+  _platform: BrowserPlatform,
+  channel: ChromeReleaseChannel
 ): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const request = httpRequest(
-      new URL(
-        `https://storage.googleapis.com/chromium-browser-snapshots/${folder(
-          platform
-        )}/LAST_CHANGE`
-      ),
-      'GET',
-      response => {
-        let data = '';
-        if (response.statusCode && response.statusCode >= 400) {
-          return reject(new Error(`Got status code ${response.statusCode}`));
-        }
-        response.on('data', chunk => {
-          data += chunk;
-        });
-        response.on('end', () => {
-          try {
-            return resolve(String(data));
-          } catch {
-            return reject(new Error('Chrome version not found'));
-          }
-        });
-      },
-      false
-    );
-    request.on('error', err => {
-      reject(err);
-    });
-  });
+  return (await getLastKnownGoodReleaseForChannel(channel)).version;
 }
 
 export function resolveSystemExecutablePath(

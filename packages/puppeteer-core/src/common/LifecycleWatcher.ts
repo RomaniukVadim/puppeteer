@@ -16,10 +16,7 @@
 
 import {HTTPResponse} from '../api/HTTPResponse.js';
 import {assert} from '../util/assert.js';
-import {
-  DeferredPromise,
-  createDeferredPromise,
-} from '../util/DeferredPromise.js';
+import {Deferred} from '../util/Deferred.js';
 
 import {CDPSessionEmittedEvents} from './Connection.js';
 import {TimeoutError} from './Errors.js';
@@ -60,8 +57,6 @@ const puppeteerToProtocolLifecycle = new Map<
   ['networkidle2', 'networkAlmostIdle'],
 ]);
 
-const noop = (): void => {};
-
 /**
  * @internal
  */
@@ -74,35 +69,15 @@ export class LifecycleWatcher {
   #eventListeners: PuppeteerEventListener[];
   #initialLoaderId: string;
 
-  #sameDocumentNavigationCompleteCallback: (x?: Error) => void = noop;
-  #sameDocumentNavigationPromise = new Promise<Error | undefined>(fulfill => {
-    this.#sameDocumentNavigationCompleteCallback = fulfill;
-  });
+  #terminationDeferred: Deferred<Error>;
+  #sameDocumentNavigationDeferred = Deferred.create<undefined>();
+  #lifecycleDeferred = Deferred.create<void>();
+  #newDocumentNavigationDeferred = Deferred.create<undefined>();
 
-  #lifecycleCallback: () => void = noop;
-  #lifecyclePromise: Promise<void> = new Promise(fulfill => {
-    this.#lifecycleCallback = fulfill;
-  });
-
-  #newDocumentNavigationCompleteCallback: (x?: Error) => void = noop;
-  #newDocumentNavigationPromise: Promise<Error | undefined> = new Promise(
-    fulfill => {
-      this.#newDocumentNavigationCompleteCallback = fulfill;
-    }
-  );
-
-  #terminationCallback: (x?: Error) => void = noop;
-  #terminationPromise: Promise<Error | undefined> = new Promise(fulfill => {
-    this.#terminationCallback = fulfill;
-  });
-
-  #timeoutPromise: Promise<TimeoutError | undefined>;
-
-  #maximumTimer?: NodeJS.Timeout;
   #hasSameDocumentNavigation?: boolean;
   #swapped?: boolean;
 
-  #navigationResponseReceived?: DeferredPromise<void>;
+  #navigationResponseReceived?: Deferred<void>;
 
   constructor(
     frameManager: FrameManager,
@@ -176,7 +151,11 @@ export class LifecycleWatcher {
       ),
     ];
 
-    this.#timeoutPromise = this.#createTimeoutPromise();
+    this.#terminationDeferred = Deferred.create<Error>({
+      timeout: this.#timeout,
+      message: `Navigation timeout of ${this.#timeout} ms exceeded`,
+    });
+
     this.#checkLifecycleComplete();
   }
 
@@ -189,7 +168,7 @@ export class LifecycleWatcher {
     // navigation requests reported by the backend. This generally should not
     // happen by it looks like it's possible.
     this.#navigationResponseReceived?.resolve();
-    this.#navigationResponseReceived = createDeferredPromise();
+    this.#navigationResponseReceived = Deferred.create();
     if (request.response() !== null) {
       this.#navigationResponseReceived?.resolve();
     }
@@ -211,8 +190,7 @@ export class LifecycleWatcher {
 
   #onFrameDetached(frame: Frame): void {
     if (this.#frame === frame) {
-      this.#terminationCallback.call(
-        null,
+      this.#terminationDeferred.resolve(
         new Error('Navigating frame was detached')
       );
       return;
@@ -222,40 +200,28 @@ export class LifecycleWatcher {
 
   async navigationResponse(): Promise<HTTPResponse | null> {
     // Continue with a possibly null response.
-    await this.#navigationResponseReceived?.catch(() => {});
+    await this.#navigationResponseReceived?.valueOrThrow();
     return this.#navigationRequest ? this.#navigationRequest.response() : null;
   }
 
   #terminate(error: Error): void {
-    this.#terminationCallback.call(null, error);
+    this.#terminationDeferred.resolve(error);
   }
 
   sameDocumentNavigationPromise(): Promise<Error | undefined> {
-    return this.#sameDocumentNavigationPromise;
+    return this.#sameDocumentNavigationDeferred.valueOrThrow();
   }
 
   newDocumentNavigationPromise(): Promise<Error | undefined> {
-    return this.#newDocumentNavigationPromise;
+    return this.#newDocumentNavigationDeferred.valueOrThrow();
   }
 
   lifecyclePromise(): Promise<void> {
-    return this.#lifecyclePromise;
+    return this.#lifecycleDeferred.valueOrThrow();
   }
 
-  timeoutOrTerminationPromise(): Promise<Error | TimeoutError | undefined> {
-    return Promise.race([this.#timeoutPromise, this.#terminationPromise]);
-  }
-
-  async #createTimeoutPromise(): Promise<TimeoutError | undefined> {
-    if (!this.#timeout) {
-      return new Promise(noop);
-    }
-    const errorMessage =
-      'Navigation timeout of ' + this.#timeout + ' ms exceeded';
-    await new Promise(fulfill => {
-      return (this.#maximumTimer = setTimeout(fulfill, this.#timeout));
-    });
-    return new TimeoutError(errorMessage);
+  terminationPromise(): Promise<Error | TimeoutError | undefined> {
+    return this.#terminationDeferred.valueOrThrow();
   }
 
   #navigatedWithinDocument(frame: Frame): void {
@@ -286,12 +252,12 @@ export class LifecycleWatcher {
     if (!checkLifecycle(this.#frame, this.#expectedLifecycle)) {
       return;
     }
-    this.#lifecycleCallback();
+    this.#lifecycleDeferred.resolve();
     if (this.#hasSameDocumentNavigation) {
-      this.#sameDocumentNavigationCompleteCallback();
+      this.#sameDocumentNavigationDeferred.resolve(undefined);
     }
     if (this.#swapped || this.#frame._loaderId !== this.#initialLoaderId) {
-      this.#newDocumentNavigationCompleteCallback();
+      this.#newDocumentNavigationDeferred.resolve(undefined);
     }
 
     function checkLifecycle(
@@ -317,6 +283,6 @@ export class LifecycleWatcher {
 
   dispose(): void {
     removeEventListeners(this.#eventListeners);
-    this.#maximumTimer !== undefined && clearTimeout(this.#maximumTimer);
+    this.#terminationDeferred.resolve(new Error('LifecycleWatcher disposed'));
   }
 }

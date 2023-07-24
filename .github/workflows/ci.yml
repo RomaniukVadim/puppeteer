@@ -12,7 +12,7 @@ on:
       - '**'
 
 concurrency:
-  group: ${{ github.head_ref || github.run_id }}
+  group: ci-${{ github.head_ref || github.run_id }}
   cancel-in-progress: true
 
 jobs:
@@ -21,11 +21,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
-        uses: actions/checkout@v3.3.0
+        uses: actions/checkout@c85c95e3d7251135ab7dc9ce3241c5835cc595a9 # v3.5.3
         with:
           fetch-depth: 2
       - name: Set up Node.js
-        uses: actions/setup-node@v3.5.1
+        uses: actions/setup-node@e33196f7422957bea03ed53f6fbb155025ffc7b8 # v3.7.0
         with:
           cache: npm
           node-version: lts/*
@@ -33,13 +33,14 @@ jobs:
         run: npm ci
         env:
           PUPPETEER_SKIP_DOWNLOAD: true
+      # Set up GitHub Actions caching for Wireit.
+      - uses: google/wireit@f3a3c79c553122e2fe5829eeac7d815326502903 # setup-github-actions-caching/v1
       - name: Check code
         run: npm run check
       - name: Lint code
         run: npm run lint
-      - name: Lint commits
-        run: npm run commitlint
-        if: github.event_name != 'pull_request'
+      - name: Validate licenses
+        run: npm run validate-licenses
       - name: Build every package
         run: npm run build
       - name: Generate documents
@@ -59,6 +60,8 @@ jobs:
   check-changes:
     needs: inspect-code
     uses: ./.github/workflows/changed-packages.yml
+    with:
+      check-mergeable-state: true
 
   deploy-docs:
     needs: check-changes
@@ -69,9 +72,9 @@ jobs:
       contents: write
     steps:
       - name: Check out repository
-        uses: actions/checkout@v3.3.0
+        uses: actions/checkout@c85c95e3d7251135ab7dc9ce3241c5835cc595a9 # v3.5.3
       - name: Set up Node.js
-        uses: actions/setup-node@v3.5.1
+        uses: actions/setup-node@e33196f7422957bea03ed53f6fbb155025ffc7b8 # v3.7.0
         with:
           cache: npm
           node-version: lts/*
@@ -84,12 +87,21 @@ jobs:
           NODE_OPTIONS: --max-old-space-size=6144
         run: npm run build
       - name: Deploy to GitHub Pages
-        uses: peaceiris/actions-gh-pages@v3
+        uses: peaceiris/actions-gh-pages@373f7f263a76c20808c831209c920827a82a2847 # v3.9.3
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           publish_dir: ./website/build
           user_name: release-please[bot]
           user_email: 55107282+release-please[bot]@users.noreply.github.com
+      - name: Test Algolia if Crawler is blocked
+        env:
+          CRAWLER_USER_ID: ${{secrets.ALGOLIA_CRAWLER_USER_ID}}
+          CRAWLER_API_KEY: ${{secrets.ALGOLIA_CRAWLER_API_KEY}}
+          CRAWLER_ID: ${{secrets.ALGOLIA_CRAWLER_ID}}
+        run: |
+          RESPONSE=$(curl -H "Content-Type: application/json" -X GET --user "$CRAWLER_USER_ID:$CRAWLER_API_KEY" \
+            "https://crawler.algolia.com/api/1/crawlers/$CRAWLER_ID" | grep "\"blocked\":true" || true ); \
+          if [ ! -z "$RESPONSE" ]; then echo "Please go to https://crawler.algolia.com/" && exit 1; fi
       - name: Trigger Algolia reindexing
         env:
           CRAWLER_USER_ID: ${{secrets.ALGOLIA_CRAWLER_USER_ID}}
@@ -119,11 +131,13 @@ jobs:
         exclude:
           - os: windows-latest
             suite: chrome-bidi
+          - os: macos-latest
+            suite: chrome-headful
     steps:
       - name: Check out repository
-        uses: actions/checkout@v3.3.0
+        uses: actions/checkout@c85c95e3d7251135ab7dc9ce3241c5835cc595a9 # v3.5.3
       - name: Set up Node.js
-        uses: actions/setup-node@v3.5.1
+        uses: actions/setup-node@e33196f7422957bea03ed53f6fbb155025ffc7b8 # v3.7.0
         with:
           cache: npm
           node-version: lts/*
@@ -133,24 +147,45 @@ jobs:
           PUPPETEER_SKIP_DOWNLOAD: true
       - name: Build packages
         run: npm run build --workspace @puppeteer-test/test
-      - name: Setup cache for Chromium binary
-        uses: actions/cache@v3
+      - name: Setup cache for Chrome binary
+        if: ${{ matrix.suite != 'chrome-bidi' }}
+        uses: actions/cache@88522ab9f39a2ea568f7027eddc7d8d8bc9d59c8 # v3.3.1
         with:
           path: ~/.cache/puppeteer/chrome
-          key: ${{ runner.os }}-chromium-${{ hashFiles('packages/puppeteer-core/src/revisions.ts') }}
-      - name: Install Chromium
+          key: ${{ runner.os }}-Chrome-${{ hashFiles('packages/puppeteer-core/src/revisions.ts') }}-${{ hashFiles('packages/puppeteer/src/node/install.ts') }}
+      - name: Install Chrome
+        if: ${{ matrix.suite != 'chrome-bidi' }}
         run: npm run postinstall
+      - name: Setup cache for Chrome Canary binary
+        if: ${{ matrix.suite == 'chrome-bidi' }}
+        uses: actions/cache@88522ab9f39a2ea568f7027eddc7d8d8bc9d59c8 # v3.3.1
+        with:
+          path: ~/.cache/puppeteer/chrome-canary
+          key: ${{ runner.os }}-Chrome-Canary-${{ hashFiles('package.json') }}
+      - name: Install Chrome Canary
+        if: ${{ matrix.suite == 'chrome-bidi' }}
+        id: browser
+        run: node tools/download_chrome_bidi.mjs ~/.cache/puppeteer/chrome-canary
       - name: Tests types
         run: npm run test-types
       - name: Run all tests (for non-Linux)
         if: ${{ matrix.os != 'ubuntu-latest' }}
-        run: npm run test -- --test-suite ${{ matrix.suite }}
+        run: npm run test -- --test-suite ${{ matrix.suite }} --save-stats-to /tmp/artifacts/${{ github.event_name }}_INSERTID.json
+        env:
+          PUPPETEER_EXECUTABLE_PATH: ${{ steps.browser.outputs.executablePath }}
       - name: Install linux dependencies.
         if: ${{ matrix.os == 'ubuntu-latest' }}
         run: sudo apt-get install xvfb
       - name: Run all tests (for Linux)
         if: ${{ matrix.os == 'ubuntu-latest' }}
-        run: xvfb-run --auto-servernum npm run test -- --test-suite ${{ matrix.suite }}
+        run: xvfb-run --auto-servernum npm run test -- --test-suite ${{ matrix.suite }} --save-stats-to /tmp/artifacts/${{ github.event_name }}_INSERTID.json
+        env:
+          PUPPETEER_EXECUTABLE_PATH: ${{ steps.browser.outputs.executablePath }}
+      - uses: actions/upload-artifact@0b7f8abb1508181956e8e162db84b466c27e18ce # v3.1.2
+        if: always()
+        with:
+          name: test-results
+          path: /tmp/artifacts/*.json
 
   chrome-tests-required:
     name: '[Required] Chrome tests'
@@ -177,11 +212,20 @@ jobs:
           - firefox-bidi
           - firefox-headful
           - firefox-headless
+        exclude:
+          - os: macos-latest
+            suite: firefox-headful
+          - os: macos-latest
+            suite: firefox-headless
+          # Disabled due to https://bugzilla.mozilla.org/show_bug.cgi?id=1843550
+          # The first time the browsers launches it crashes.
+          - os: macos-latest
+            suite: firefox-bidi
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@c85c95e3d7251135ab7dc9ce3241c5835cc595a9 # v3.5.3
       - name: Set up Node.js
-        uses: actions/setup-node@v3.5.1
+        uses: actions/setup-node@e33196f7422957bea03ed53f6fbb155025ffc7b8 # v3.7.0
         with:
           cache: npm
           node-version: lts/*
@@ -192,10 +236,10 @@ jobs:
       - name: Build packages
         run: npm run build --workspace @puppeteer-test/test
       - name: Setup cache for Firefox binary
-        uses: actions/cache@v3
+        uses: actions/cache@88522ab9f39a2ea568f7027eddc7d8d8bc9d59c8 # v3.3.1
         with:
           path: ~/.cache/puppeteer/firefox
-          key: ${{ runner.os }}-firefox-${{ hashFiles('packages/puppeteer-core/src/revisions.ts') }}
+          key: ${{ runner.os }}-firefox-${{ hashFiles('packages/puppeteer-core/src/revisions.ts') }}-${{ hashFiles('packages/puppeteer/src/node/install.ts') }}
       - name: Install Firefox
         env:
           PUPPETEER_PRODUCT: firefox
@@ -204,13 +248,18 @@ jobs:
         run: npm run test-types
       - name: Run all tests (for non-Linux)
         if: ${{ matrix.os != 'ubuntu-latest' }}
-        run: npm run test -- --test-suite ${{ matrix.suite }}
+        run: npm run test -- --test-suite ${{ matrix.suite }} --save-stats-to /tmp/artifacts/${{ github.event_name }}_INSERTID.json
       - name: Install linux dependencies.
         if: ${{ matrix.os == 'ubuntu-latest' }}
         run: sudo apt-get install xvfb
       - name: Run all tests (for Linux)
         if: ${{ matrix.os == 'ubuntu-latest' }}
-        run: xvfb-run --auto-servernum npm run test -- --test-suite ${{ matrix.suite }}
+        run: xvfb-run --auto-servernum npm run test -- --test-suite ${{ matrix.suite }} --save-stats-to /tmp/artifacts/${{ github.event_name }}_INSERTID.json
+      - uses: actions/upload-artifact@0b7f8abb1508181956e8e162db84b466c27e18ce # v3.1.2
+        if: always()
+        with:
+          name: test-results
+          path: /tmp/artifacts/*.json
 
   firefox-tests-required:
     name: '[Required] Firefox tests'
@@ -229,9 +278,9 @@ jobs:
     if: ${{ !startsWith(github.ref_name, 'release-please') && contains(fromJSON(needs.check-changes.outputs.changes), 'puppeteer') }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@c85c95e3d7251135ab7dc9ce3241c5835cc595a9 # v3.5.3
       - name: Set up Node.js
-        uses: actions/setup-node@v3.5.1
+        uses: actions/setup-node@e33196f7422957bea03ed53f6fbb155025ffc7b8 # v3.7.0
         with:
           cache: npm
           node-version: lts/*
@@ -244,7 +293,7 @@ jobs:
       - name: Pack installation test
         run: npm pack --workspace @puppeteer-test/installation
       - name: Upload installation test
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@0b7f8abb1508181956e8e162db84b466c27e18ce # v3.1.2
         with:
           name: installation-test
           path: puppeteer-test-installation-latest.tgz
@@ -262,28 +311,21 @@ jobs:
           - macos-latest
           - windows-latest
         node:
-          - 14
-          - 16
           - 18
         pkg_manager:
           - npm
     steps:
       - name: Download installation test
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3.0.2
         with:
           name: installation-test
       - name: Unpack installation test
         run: tar -xf puppeteer-test-installation-latest.tgz --strip-components 1 -C .
       - name: Set up Node.js
-        uses: actions/setup-node@v3.5.1
+        uses: actions/setup-node@e33196f7422957bea03ed53f6fbb155025ffc7b8 # v3.7.0
         with:
           node-version: ${{ matrix.node }}
       - name: Set up ${{ matrix.pkg_manager }}
-        id: workaround
-        if: ${{ matrix.node == '14' && matrix.os == 'windows-latest' && matrix.pkg_manager == 'npm' }}
-        run: npm install -g ${{ matrix.pkg_manager }}@8.3
-      - name: Set up ${{ matrix.pkg_manager }}
-        if: ${{ steps.workaround.outcome == 'skipped' }}
         run: npm install -g ${{ matrix.pkg_manager }}@latest
       - name: Install dependencies
         run: ${{ matrix.pkg_manager }} install
@@ -309,11 +351,11 @@ jobs:
     if: ${{ contains(fromJSON(needs.check-changes.outputs.changes), 'puppeteer') }}
     steps:
       - name: Check out repository
-        uses: actions/checkout@v3.3.0
+        uses: actions/checkout@c85c95e3d7251135ab7dc9ce3241c5835cc595a9 # v3.5.3
         with:
           fetch-depth: 2
       - name: Set up Node.js
-        uses: actions/setup-node@v3.5.1
+        uses: actions/setup-node@e33196f7422957bea03ed53f6fbb155025ffc7b8 # v3.7.0
         with:
           cache: npm
           node-version: lts/*
@@ -334,6 +376,27 @@ jobs:
         run: |
           docker run -i --init --cap-add=SYS_ADMIN --rm puppeteer-test-image node -e "`cat test/smoke-test.js`"
 
+  unit-tests:
+    name: '[Required] Unit tests'
+    runs-on: ubuntu-latest
+    needs: check-changes
+    if: ${{ contains(fromJSON(needs.check-changes.outputs.changes), 'puppeteer') }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@c85c95e3d7251135ab7dc9ce3241c5835cc595a9 # v3.5.3
+      - name: Set up Node.js
+        uses: actions/setup-node@e33196f7422957bea03ed53f6fbb155025ffc7b8 # v3.7.0
+        with:
+          cache: npm
+          node-version: lts/*
+      - name: Install dependencies
+        run: npm ci
+        env:
+          PUPPETEER_SKIP_DOWNLOAD: true
+      - name: Run unit tests
+        run: |
+          npm run unit --w puppeteer-core -w puppeteer --if-present
+
   ng-schematics-tests:
     name: '[Required] Test Angular Schematics'
     runs-on: ubuntu-latest
@@ -341,9 +404,9 @@ jobs:
     if: ${{ contains(fromJSON(needs.check-changes.outputs.changes), 'ng-schematics') }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@c85c95e3d7251135ab7dc9ce3241c5835cc595a9 # v3.5.3
       - name: Set up Node.js
-        uses: actions/setup-node@v3.5.1
+        uses: actions/setup-node@e33196f7422957bea03ed53f6fbb155025ffc7b8 # v3.7.0
         with:
           cache: npm
           node-version: lts/*
@@ -368,9 +431,9 @@ jobs:
           - macos-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@c85c95e3d7251135ab7dc9ce3241c5835cc595a9 # v3.5.3
       - name: Set up Node.js
-        uses: actions/setup-node@v3.5.1
+        uses: actions/setup-node@e33196f7422957bea03ed53f6fbb155025ffc7b8 # v3.7.0
         with:
           cache: npm
           node-version: lts/*

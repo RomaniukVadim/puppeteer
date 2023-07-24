@@ -17,29 +17,28 @@
 import {Protocol} from 'devtools-protocol';
 
 import {
+  AutofillData,
   BoundingBox,
   BoxModel,
   ClickOptions,
   ElementHandle,
   Offset,
   Point,
-  PressOptions,
 } from '../api/ElementHandle.js';
+import {KeyPressOptions, KeyboardTypeOptions} from '../api/Input.js';
 import {Page, ScreenshotOptions} from '../api/Page.js';
 import {assert} from '../util/assert.js';
-import {AsyncIterableUtil} from '../util/AsyncIterableUtil.js';
 
 import {CDPSession} from './Connection.js';
 import {ExecutionContext} from './ExecutionContext.js';
 import {Frame} from './Frame.js';
 import {FrameManager} from './FrameManager.js';
-import {getQueryHandlerAndSelector} from './GetQueryHandler.js';
 import {WaitForSelectorOptions} from './IsolatedWorld.js';
 import {CDPJSHandle} from './JSHandle.js';
 import {CDPPage} from './Page.js';
-import {ElementFor, EvaluateFuncWith, HandleFor, NodeFor} from './types.js';
+import {NodeFor} from './types.js';
 import {KeyInput} from './USKeyboardLayout.js';
-import {debugError, isString} from './util.js';
+import {debugError} from './util.js';
 
 const applyOffsetsToQuad = (
   quad: Point[],
@@ -59,7 +58,7 @@ const applyOffsetsToQuad = (
  * @internal
  */
 export class CDPElementHandle<
-  ElementType extends Node = Element
+  ElementType extends Node = Element,
 > extends ElementHandle<ElementType> {
   #frame: Frame;
   declare handle: CDPJSHandle<ElementType>;
@@ -106,124 +105,31 @@ export class CDPElementHandle<
   override async $<Selector extends string>(
     selector: Selector
   ): Promise<CDPElementHandle<NodeFor<Selector>> | null> {
-    const {updatedSelector, QueryHandler} =
-      getQueryHandlerAndSelector(selector);
-    return (await QueryHandler.queryOne(
-      this,
-      updatedSelector
-    )) as CDPElementHandle<NodeFor<Selector>> | null;
+    return super.$(selector) as Promise<CDPElementHandle<
+      NodeFor<Selector>
+    > | null>;
   }
 
   override async $$<Selector extends string>(
     selector: Selector
   ): Promise<Array<CDPElementHandle<NodeFor<Selector>>>> {
-    const {updatedSelector, QueryHandler} =
-      getQueryHandlerAndSelector(selector);
-    return AsyncIterableUtil.collect(
-      QueryHandler.queryAll(this, updatedSelector)
-    ) as Promise<Array<CDPElementHandle<NodeFor<Selector>>>>;
-  }
-
-  override async $eval<
-    Selector extends string,
-    Params extends unknown[],
-    Func extends EvaluateFuncWith<NodeFor<Selector>, Params> = EvaluateFuncWith<
-      NodeFor<Selector>,
-      Params
-    >
-  >(
-    selector: Selector,
-    pageFunction: Func | string,
-    ...args: Params
-  ): Promise<Awaited<ReturnType<Func>>> {
-    const elementHandle = await this.$(selector);
-    if (!elementHandle) {
-      throw new Error(
-        `Error: failed to find element matching selector "${selector}"`
-      );
-    }
-    const result = await elementHandle.evaluate(pageFunction, ...args);
-    await elementHandle.dispose();
-    return result;
-  }
-
-  override async $$eval<
-    Selector extends string,
-    Params extends unknown[],
-    Func extends EvaluateFuncWith<
-      Array<NodeFor<Selector>>,
-      Params
-    > = EvaluateFuncWith<Array<NodeFor<Selector>>, Params>
-  >(
-    selector: Selector,
-    pageFunction: Func | string,
-    ...args: Params
-  ): Promise<Awaited<ReturnType<Func>>> {
-    const results = await this.$$(selector);
-    const elements = await this.evaluateHandle((_, ...elements) => {
-      return elements;
-    }, ...results);
-    const [result] = await Promise.all([
-      elements.evaluate(pageFunction, ...args),
-      ...results.map(results => {
-        return results.dispose();
-      }),
-    ]);
-    await elements.dispose();
-    return result;
-  }
-
-  override async $x(
-    expression: string
-  ): Promise<Array<CDPElementHandle<Node>>> {
-    if (expression.startsWith('//')) {
-      expression = `.${expression}`;
-    }
-    return this.$$(`xpath/${expression}`);
+    return super.$$(selector) as Promise<
+      Array<CDPElementHandle<NodeFor<Selector>>>
+    >;
   }
 
   override async waitForSelector<Selector extends string>(
     selector: Selector,
-    options: WaitForSelectorOptions = {}
+    options?: WaitForSelectorOptions
   ): Promise<CDPElementHandle<NodeFor<Selector>> | null> {
-    const {updatedSelector, QueryHandler} =
-      getQueryHandlerAndSelector(selector);
-    return (await QueryHandler.waitFor(
-      this,
-      updatedSelector,
-      options
-    )) as CDPElementHandle<NodeFor<Selector>> | null;
-  }
-
-  override async waitForXPath(
-    xpath: string,
-    options: {
-      visible?: boolean;
-      hidden?: boolean;
-      timeout?: number;
-    } = {}
-  ): Promise<CDPElementHandle<Node> | null> {
-    if (xpath.startsWith('//')) {
-      xpath = `.${xpath}`;
-    }
-    return this.waitForSelector(`xpath/${xpath}`, options);
-  }
-
-  override async toElement<
-    K extends keyof HTMLElementTagNameMap | keyof SVGElementTagNameMap
-  >(tagName: K): Promise<HandleFor<ElementFor<K>>> {
-    const isMatchingTagName = await this.evaluate((node, tagName) => {
-      return node.nodeName === tagName.toUpperCase();
-    }, tagName);
-    if (!isMatchingTagName) {
-      throw new Error(`Element is not a(n) \`${tagName}\` element`);
-    }
-    return this as unknown as HandleFor<ElementFor<K>>;
+    return (await super.waitForSelector(selector, options)) as CDPElementHandle<
+      NodeFor<Selector>
+    > | null;
   }
 
   override async contentFrame(): Promise<Frame | null> {
     const nodeInfo = await this.client.send('DOM.describeNode', {
-      objectId: this.remoteObject().objectId,
+      objectId: this.id,
     });
     if (typeof nodeInfo.node.frameId !== 'string') {
       return null;
@@ -231,55 +137,18 @@ export class CDPElementHandle<
     return this.#frameManager.frame(nodeInfo.node.frameId);
   }
 
-  async #scrollIntoViewIfNeeded(
+  override async scrollIntoView(
     this: CDPElementHandle<Element>
   ): Promise<void> {
-    const error = await this.evaluate(
-      async (element): Promise<string | undefined> => {
-        if (!element.isConnected) {
-          return 'Node is detached from document';
-        }
-        if (element.nodeType !== Node.ELEMENT_NODE) {
-          return 'Node is not of type HTMLElement';
-        }
-        return;
-      }
-    );
-
-    if (error) {
-      throw new Error(error);
-    }
-
+    await this.assertConnectedElement();
     try {
       await this.client.send('DOM.scrollIntoViewIfNeeded', {
-        objectId: this.remoteObject().objectId,
+        objectId: this.id,
       });
-    } catch (_err) {
+    } catch (error) {
+      debugError(error);
       // Fallback to Element.scrollIntoView if DOM.scrollIntoViewIfNeeded is not supported
-      await this.evaluate(
-        async (element, pageJavascriptEnabled): Promise<void> => {
-          const visibleRatio = async () => {
-            return await new Promise(resolve => {
-              const observer = new IntersectionObserver(entries => {
-                resolve(entries[0]!.intersectionRatio);
-                observer.disconnect();
-              });
-              observer.observe(element);
-            });
-          };
-          if (!pageJavascriptEnabled || (await visibleRatio()) !== 1.0) {
-            element.scrollIntoView({
-              block: 'center',
-              inline: 'center',
-              // @ts-expect-error Chrome still supports behavior: instant but
-              // it's not in the spec so TS shouts We don't want to make this
-              // breaking change in Puppeteer yet so we'll ignore the line.
-              behavior: 'instant',
-            });
-          }
-        },
-        this.#page.isJavaScriptEnabled()
-      );
+      await super.scrollIntoView();
     }
   }
 
@@ -317,7 +186,7 @@ export class CDPElementHandle<
     const [result, layoutMetrics] = await Promise.all([
       this.client
         .send('DOM.getContentQuads', {
-          objectId: this.remoteObject().objectId,
+          objectId: this.id,
         })
         .catch(debugError),
       (this.#page as CDPPage)._client().send('Page.getLayoutMetrics'),
@@ -419,7 +288,7 @@ export class CDPElementHandle<
    * If the element is detached from DOM, the method throws an error.
    */
   override async hover(this: CDPElementHandle<Element>): Promise<void> {
-    await this.#scrollIntoViewIfNeeded();
+    await this.scrollIntoViewIfNeeded();
     const {x, y} = await this.clickablePoint();
     await this.#page.mouse.move(x, y);
   }
@@ -431,9 +300,9 @@ export class CDPElementHandle<
    */
   override async click(
     this: CDPElementHandle<Element>,
-    options: ClickOptions = {}
+    options: Readonly<ClickOptions> = {}
   ): Promise<void> {
-    await this.#scrollIntoViewIfNeeded();
+    await this.scrollIntoViewIfNeeded();
     const {x, y} = await this.clickablePoint(options.offset);
     await this.#page.mouse.click(x, y, options);
   }
@@ -449,7 +318,7 @@ export class CDPElementHandle<
       this.#page.isDragInterceptionEnabled(),
       'Drag Interception is not enabled!'
     );
-    await this.#scrollIntoViewIfNeeded();
+    await this.scrollIntoViewIfNeeded();
     const start = await this.clickablePoint();
     return await this.#page.mouse.drag(start, target);
   }
@@ -458,7 +327,7 @@ export class CDPElementHandle<
     this: CDPElementHandle<Element>,
     data: Protocol.Input.DragData = {items: [], dragOperationsMask: 1}
   ): Promise<void> {
-    await this.#scrollIntoViewIfNeeded();
+    await this.scrollIntoViewIfNeeded();
     const target = await this.clickablePoint();
     await this.#page.mouse.dragEnter(target, data);
   }
@@ -467,7 +336,7 @@ export class CDPElementHandle<
     this: CDPElementHandle<Element>,
     data: Protocol.Input.DragData = {items: [], dragOperationsMask: 1}
   ): Promise<void> {
-    await this.#scrollIntoViewIfNeeded();
+    await this.scrollIntoViewIfNeeded();
     const target = await this.clickablePoint();
     await this.#page.mouse.dragOver(target, data);
   }
@@ -476,7 +345,7 @@ export class CDPElementHandle<
     this: CDPElementHandle<Element>,
     data: Protocol.Input.DragData = {items: [], dragOperationsMask: 1}
   ): Promise<void> {
-    await this.#scrollIntoViewIfNeeded();
+    await this.scrollIntoViewIfNeeded();
     const destination = await this.clickablePoint();
     await this.#page.mouse.drop(destination, data);
   }
@@ -486,54 +355,14 @@ export class CDPElementHandle<
     target: CDPElementHandle<Node>,
     options?: {delay: number}
   ): Promise<void> {
-    await this.#scrollIntoViewIfNeeded();
+    assert(
+      this.#page.isDragInterceptionEnabled(),
+      'Drag Interception is not enabled!'
+    );
+    await this.scrollIntoViewIfNeeded();
     const startPoint = await this.clickablePoint();
     const targetPoint = await target.clickablePoint();
     await this.#page.mouse.dragAndDrop(startPoint, targetPoint, options);
-  }
-
-  override async select(...values: string[]): Promise<string[]> {
-    for (const value of values) {
-      assert(
-        isString(value),
-        'Values must be strings. Found value "' +
-          value +
-          '" of type "' +
-          typeof value +
-          '"'
-      );
-    }
-
-    return this.evaluate((element, vals): string[] => {
-      const values = new Set(vals);
-      if (!(element instanceof HTMLSelectElement)) {
-        throw new Error('Element is not a <select> element.');
-      }
-
-      const selectedValues = new Set<string>();
-      if (!element.multiple) {
-        for (const option of element.options) {
-          option.selected = false;
-        }
-        for (const option of element.options) {
-          if (values.has(option.value)) {
-            option.selected = true;
-            selectedValues.add(option.value);
-            break;
-          }
-        }
-      } else {
-        for (const option of element.options) {
-          option.selected = values.has(option.value);
-          if (option.selected) {
-            selectedValues.add(option.value);
-          }
-        }
-      }
-      element.dispatchEvent(new Event('input', {bubbles: true}));
-      element.dispatchEvent(new Event('change', {bubbles: true}));
-      return [...selectedValues.values()];
-    }, values);
   }
 
   override async uploadFile(
@@ -567,9 +396,8 @@ export class CDPElementHandle<
         return path.resolve(filePath);
       }
     });
-    const {objectId} = this.remoteObject();
     const {node} = await this.client.send('DOM.describeNode', {
-      objectId,
+      objectId: this.id,
     });
     const {backendNodeId} = node;
 
@@ -587,7 +415,7 @@ export class CDPElementHandle<
       });
     } else {
       await this.client.send('DOM.setFileInputFiles', {
-        objectId,
+        objectId: this.id,
         files,
         backendNodeId,
       });
@@ -595,44 +423,41 @@ export class CDPElementHandle<
   }
 
   override async tap(this: CDPElementHandle<Element>): Promise<void> {
-    await this.#scrollIntoViewIfNeeded();
+    await this.scrollIntoViewIfNeeded();
     const {x, y} = await this.clickablePoint();
     await this.#page.touchscreen.touchStart(x, y);
     await this.#page.touchscreen.touchEnd();
   }
 
   override async touchStart(this: CDPElementHandle<Element>): Promise<void> {
-    await this.#scrollIntoViewIfNeeded();
+    await this.scrollIntoViewIfNeeded();
     const {x, y} = await this.clickablePoint();
     await this.#page.touchscreen.touchStart(x, y);
   }
 
   override async touchMove(this: CDPElementHandle<Element>): Promise<void> {
-    await this.#scrollIntoViewIfNeeded();
+    await this.scrollIntoViewIfNeeded();
     const {x, y} = await this.clickablePoint();
     await this.#page.touchscreen.touchMove(x, y);
   }
 
   override async touchEnd(this: CDPElementHandle<Element>): Promise<void> {
-    await this.#scrollIntoViewIfNeeded();
+    await this.scrollIntoViewIfNeeded();
     await this.#page.touchscreen.touchEnd();
   }
 
-  override async focus(): Promise<void> {
-    await this.evaluate(element => {
-      if (!(element instanceof HTMLElement)) {
-        throw new Error('Cannot focus non-HTMLElement');
-      }
-      return element.focus();
-    });
-  }
-
-  override async type(text: string, options?: {delay: number}): Promise<void> {
+  override async type(
+    text: string,
+    options?: Readonly<KeyboardTypeOptions>
+  ): Promise<void> {
     await this.focus();
     await this.#page.keyboard.type(text, options);
   }
 
-  override async press(key: KeyInput, options?: PressOptions): Promise<void> {
+  override async press(
+    key: KeyInput,
+    options?: Readonly<KeyPressOptions>
+  ): Promise<void> {
     await this.focus();
     await this.#page.keyboard.press(key, options);
   }
@@ -715,7 +540,7 @@ export class CDPElementHandle<
       needsViewportReset = true;
     }
 
-    await this.#scrollIntoViewIfNeeded();
+    await this.scrollIntoViewIfNeeded();
 
     boundingBox = await this.boundingBox();
     assert(boundingBox, 'Node is either not visible or not an HTMLElement');
@@ -748,23 +573,17 @@ export class CDPElementHandle<
     return imageData;
   }
 
-  override async isIntersectingViewport(
-    this: CDPElementHandle<Element>,
-    options?: {
-      threshold?: number;
-    }
-  ): Promise<boolean> {
-    const {threshold = 0} = options ?? {};
-    return await this.evaluate(async (element, threshold) => {
-      const visibleRatio = await new Promise<number>(resolve => {
-        const observer = new IntersectionObserver(entries => {
-          resolve(entries[0]!.intersectionRatio);
-          observer.disconnect();
-        });
-        observer.observe(element);
-      });
-      return threshold === 1 ? visibleRatio === 1 : visibleRatio > threshold;
-    }, threshold);
+  override async autofill(data: AutofillData): Promise<void> {
+    const nodeInfo = await this.client.send('DOM.describeNode', {
+      objectId: this.handle.id,
+    });
+    const fieldId = nodeInfo.node.backendNodeId;
+    const frameId = this.#frame._id;
+    await this.client.send('Autofill.trigger', {
+      fieldId,
+      frameId,
+      card: data.creditCard,
+    });
   }
 }
 

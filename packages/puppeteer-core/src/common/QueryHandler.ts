@@ -15,15 +15,13 @@
  */
 
 import {ElementHandle} from '../api/ElementHandle.js';
+import type {Frame} from '../api/Frame.js';
 import type PuppeteerUtil from '../injected/injected.js';
-import {assert} from '../util/assert.js';
 import {isErrorLike} from '../util/ErrorLike.js';
 import {interpolateFunction, stringifyFunction} from '../util/Function.js';
 
-import type {Frame} from './Frame.js';
 import {transposeIterableHandle} from './HandleIterator.js';
 import type {WaitForSelectorOptions} from './IsolatedWorld.js';
-import {MAIN_WORLD, PUPPETEER_WORLD} from './IsolatedWorlds.js';
 import {LazyArg} from './LazyArg.js';
 import type {Awaitable, AwaitableIterable} from './types.js';
 
@@ -108,8 +106,7 @@ export class QueryHandler {
     element: ElementHandle<Node>,
     selector: string
   ): AwaitableIterable<ElementHandle<Node>> {
-    const world = element.executionContext()._world;
-    assert(world);
+    element.assertElementHasWorld();
     const handle = await element.evaluateHandle(
       this._querySelectorAll,
       selector,
@@ -129,8 +126,7 @@ export class QueryHandler {
     element: ElementHandle<Node>,
     selector: string
   ): Promise<ElementHandle<Node> | null> {
-    const world = element.executionContext()._world;
-    assert(world);
+    element.assertElementHasWorld();
     const result = await element.evaluateHandle(
       this._querySelector,
       selector,
@@ -163,13 +159,15 @@ export class QueryHandler {
       frame = elementOrFrame;
     } else {
       frame = elementOrFrame.frame;
-      element = await frame.worlds[PUPPETEER_WORLD].adoptHandle(elementOrFrame);
+      element = await frame.isolatedRealm().adoptHandle(elementOrFrame);
     }
 
-    const {visible = false, hidden = false, timeout} = options;
+    const {visible = false, hidden = false, timeout, signal} = options;
 
     try {
-      const handle = await frame.worlds[PUPPETEER_WORLD].waitForFunction(
+      signal?.throwIfAborted();
+
+      const handle = await frame.isolatedRealm().waitForFunction(
         async (PuppeteerUtil, query, selector, root, visible) => {
           const querySelector = PuppeteerUtil.createFunction(
             query
@@ -185,6 +183,7 @@ export class QueryHandler {
           polling: visible || hidden ? 'raf' : 'mutation',
           root: element,
           timeout,
+          signal,
         },
         LazyArg.create(context => {
           return context.puppeteerUtil;
@@ -195,13 +194,21 @@ export class QueryHandler {
         visible ? true : hidden ? false : undefined
       );
 
+      if (signal?.aborted) {
+        await handle.dispose();
+        throw signal.reason;
+      }
+
       if (!(handle instanceof ElementHandle)) {
         await handle.dispose();
         return null;
       }
-      return frame.worlds[MAIN_WORLD].transferHandle(handle);
+      return frame.mainRealm().transferHandle(handle);
     } catch (error) {
       if (!isErrorLike(error)) {
+        throw error;
+      }
+      if (error.name === 'AbortError') {
         throw error;
       }
       error.message = `Waiting for selector \`${selector}\` failed: ${error.message}`;

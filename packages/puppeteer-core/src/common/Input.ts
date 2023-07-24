@@ -17,6 +17,19 @@
 import {Protocol} from 'devtools-protocol';
 
 import {Point} from '../api/ElementHandle.js';
+import {
+  Keyboard,
+  KeyDownOptions,
+  KeyPressOptions,
+  Mouse,
+  MouseButton,
+  MouseClickOptions,
+  MouseMoveOptions,
+  MouseOptions,
+  MouseWheelOptions,
+  Touchscreen,
+  KeyboardTypeOptions,
+} from '../api/Input.js';
 import {assert} from '../util/assert.js';
 
 import {CDPSession} from './Connection.js';
@@ -27,47 +40,9 @@ type KeyDescription = Required<
 >;
 
 /**
- * Keyboard provides an api for managing a virtual keyboard.
- * The high level api is {@link Keyboard."type"},
- * which takes raw characters and generates proper keydown, keypress/input,
- * and keyup events on your page.
- *
- * @remarks
- * For finer control, you can use {@link Keyboard.down},
- * {@link Keyboard.up}, and {@link Keyboard.sendCharacter}
- * to manually fire events as if they were generated from a real keyboard.
- *
- * On macOS, keyboard shortcuts like `⌘ A` -\> Select All do not work.
- * See {@link https://github.com/puppeteer/puppeteer/issues/1313 | #1313}.
- *
- * @example
- * An example of holding down `Shift` in order to select and delete some text:
- *
- * ```ts
- * await page.keyboard.type('Hello World!');
- * await page.keyboard.press('ArrowLeft');
- *
- * await page.keyboard.down('Shift');
- * for (let i = 0; i < ' World'.length; i++)
- *   await page.keyboard.press('ArrowLeft');
- * await page.keyboard.up('Shift');
- *
- * await page.keyboard.press('Backspace');
- * // Result text will end up saying 'Hello!'
- * ```
- *
- * @example
- * An example of pressing `A`
- *
- * ```ts
- * await page.keyboard.down('Shift');
- * await page.keyboard.press('KeyA');
- * await page.keyboard.up('Shift');
- * ```
- *
- * @public
+ * @internal
  */
-export class Keyboard {
+export class CDPKeyboard extends Keyboard {
   #client: CDPSession;
   #pressedKeys = new Set<string>();
 
@@ -80,39 +55,13 @@ export class Keyboard {
    * @internal
    */
   constructor(client: CDPSession) {
+    super();
     this.#client = client;
   }
 
-  /**
-   * Dispatches a `keydown` event.
-   *
-   * @remarks
-   * If `key` is a single character and no modifier keys besides `Shift`
-   * are being held down, a `keypress`/`input` event will also generated.
-   * The `text` option can be specified to force an input event to be generated.
-   * If `key` is a modifier key, `Shift`, `Meta`, `Control`, or `Alt`,
-   * subsequent key presses will be sent with that modifier active.
-   * To release the modifier key, use {@link Keyboard.up}.
-   *
-   * After the key is pressed once, subsequent calls to
-   * {@link Keyboard.down} will have
-   * {@link https://developer.mozilla.org/en-US/docs/Web/API/KeyboardEvent/repeat | repeat}
-   * set to true. To release the key, use {@link Keyboard.up}.
-   *
-   * Modifier keys DO influence {@link Keyboard.down}.
-   * Holding down `Shift` will type the text in upper case.
-   *
-   * @param key - Name of key to press, such as `ArrowLeft`.
-   * See {@link KeyInput} for a list of all key names.
-   *
-   * @param options - An object of options. Accepts text which, if specified,
-   * generates an input event with this text. Accepts commands which, if specified,
-   * is the commands of keyboard shortcuts,
-   * see {@link https://source.chromium.org/chromium/chromium/src/+/main:third_party/blink/renderer/core/editing/commands/editor_command_names.h | Chromium Source Code} for valid command names.
-   */
-  async down(
+  override async down(
     key: KeyInput,
-    options: {text?: string; commands?: string[]} = {
+    options: Readonly<KeyDownOptions> = {
       text: undefined,
       commands: [],
     }
@@ -209,14 +158,7 @@ export class Keyboard {
     return description;
   }
 
-  /**
-   * Dispatches a `keyup` event.
-   *
-   * @param key - Name of key to release, such as `ArrowLeft`.
-   * See {@link KeyInput | KeyInput}
-   * for a list of all key names.
-   */
-  async up(key: KeyInput): Promise<void> {
+  override async up(key: KeyInput): Promise<void> {
     const description = this.#keyDescriptionForString(key);
 
     this._modifiers &= ~this.#modifierBit(description.key);
@@ -231,23 +173,7 @@ export class Keyboard {
     });
   }
 
-  /**
-   * Dispatches a `keypress` and `input` event.
-   * This does not send a `keydown` or `keyup` event.
-   *
-   * @remarks
-   * Modifier keys DO NOT effect {@link Keyboard.sendCharacter | Keyboard.sendCharacter}.
-   * Holding down `Shift` will not type the text in upper case.
-   *
-   * @example
-   *
-   * ```ts
-   * page.keyboard.sendCharacter('嗨');
-   * ```
-   *
-   * @param char - Character to send into the page.
-   */
-  async sendCharacter(char: string): Promise<void> {
+  override async sendCharacter(char: string): Promise<void> {
     await this.#client.send('Input.insertText', {text: char});
   }
 
@@ -255,30 +181,10 @@ export class Keyboard {
     return !!_keyDefinitions[char as KeyInput];
   }
 
-  /**
-   * Sends a `keydown`, `keypress`/`input`,
-   * and `keyup` event for each character in the text.
-   *
-   * @remarks
-   * To press a special key, like `Control` or `ArrowDown`,
-   * use {@link Keyboard.press}.
-   *
-   * Modifier keys DO NOT effect `keyboard.type`.
-   * Holding down `Shift` will not type the text in upper case.
-   *
-   * @example
-   *
-   * ```ts
-   * await page.keyboard.type('Hello'); // Types instantly
-   * await page.keyboard.type('World', {delay: 100}); // Types slower, like a user
-   * ```
-   *
-   * @param text - A text to type into a focused element.
-   * @param options - An object of options. Accepts delay which,
-   * if specified, is the time to wait between `keydown` and `keyup` in milliseconds.
-   * Defaults to 0.
-   */
-  async type(text: string, options: {delay?: number} = {}): Promise<void> {
+  override async type(
+    text: string,
+    options: Readonly<KeyboardTypeOptions> = {}
+  ): Promise<void> {
     const delay = options.delay || undefined;
     for (const char of text) {
       if (this.charIsKey(char)) {
@@ -294,31 +200,9 @@ export class Keyboard {
     }
   }
 
-  /**
-   * Shortcut for {@link Keyboard.down}
-   * and {@link Keyboard.up}.
-   *
-   * @remarks
-   * If `key` is a single character and no modifier keys besides `Shift`
-   * are being held down, a `keypress`/`input` event will also generated.
-   * The `text` option can be specified to force an input event to be generated.
-   *
-   * Modifier keys DO effect {@link Keyboard.press}.
-   * Holding down `Shift` will type the text in upper case.
-   *
-   * @param key - Name of key to press, such as `ArrowLeft`.
-   * See {@link KeyInput} for a list of all key names.
-   *
-   * @param options - An object of options. Accepts text which, if specified,
-   * generates an input event with this text. Accepts delay which,
-   * if specified, is the time to wait between `keydown` and `keyup` in milliseconds.
-   * Defaults to 0. Accepts commands which, if specified,
-   * is the commands of keyboard shortcuts,
-   * see {@link https://source.chromium.org/chromium/chromium/src/+/main:third_party/blink/renderer/core/editing/commands/editor_command_names.h | Chromium Source Code} for valid command names.
-   */
-  async press(
+  override async press(
     key: KeyInput,
-    options: {delay?: number; text?: string; commands?: string[]} = {}
+    options: Readonly<KeyPressOptions> = {}
   ): Promise<void> {
     const {delay = null} = options;
     await this.down(key, options);
@@ -332,237 +216,276 @@ export class Keyboard {
 }
 
 /**
- * @public
+ * This must follow {@link Protocol.Input.DispatchMouseEventRequest.buttons}.
  */
-export type MouseButton = 'left' | 'right' | 'middle' | 'back' | 'forward';
+const enum MouseButtonFlag {
+  None = 0,
+  Left = 1,
+  Right = 1 << 1,
+  Middle = 1 << 2,
+  Back = 1 << 3,
+  Forward = 1 << 4,
+}
+
+const getFlag = (button: MouseButton): MouseButtonFlag => {
+  switch (button) {
+    case MouseButton.Left:
+      return MouseButtonFlag.Left;
+    case MouseButton.Right:
+      return MouseButtonFlag.Right;
+    case MouseButton.Middle:
+      return MouseButtonFlag.Middle;
+    case MouseButton.Back:
+      return MouseButtonFlag.Back;
+    case MouseButton.Forward:
+      return MouseButtonFlag.Forward;
+  }
+};
 
 /**
- * @public
+ * This should match
+ * https://source.chromium.org/chromium/chromium/src/+/refs/heads/main:content/browser/renderer_host/input/web_input_event_builders_mac.mm;drc=a61b95c63b0b75c1cfe872d9c8cdf927c226046e;bpv=1;bpt=1;l=221.
  */
-export interface MouseOptions {
-  button?: MouseButton;
-  clickCount?: number;
+const getButtonFromPressedButtons = (
+  buttons: number
+): Protocol.Input.MouseButton => {
+  if (buttons & MouseButtonFlag.Left) {
+    return MouseButton.Left;
+  } else if (buttons & MouseButtonFlag.Right) {
+    return MouseButton.Right;
+  } else if (buttons & MouseButtonFlag.Middle) {
+    return MouseButton.Middle;
+  } else if (buttons & MouseButtonFlag.Back) {
+    return MouseButton.Back;
+  } else if (buttons & MouseButtonFlag.Forward) {
+    return MouseButton.Forward;
+  }
+  return 'none';
+};
+
+interface MouseState {
+  /**
+   * The current position of the mouse.
+   */
+  position: Point;
+  /**
+   * The buttons that are currently being pressed.
+   */
+  buttons: number;
 }
 
 /**
- * @public
+ * @internal
  */
-export interface MouseWheelOptions {
-  deltaX?: number;
-  deltaY?: number;
-}
-
-/**
- * The Mouse class operates in main-frame CSS pixels
- * relative to the top-left corner of the viewport.
- * @remarks
- * Every `page` object has its own Mouse, accessible with [`page.mouse`](#pagemouse).
- *
- * @example
- *
- * ```ts
- * // Using ‘page.mouse’ to trace a 100x100 square.
- * await page.mouse.move(0, 0);
- * await page.mouse.down();
- * await page.mouse.move(0, 100);
- * await page.mouse.move(100, 100);
- * await page.mouse.move(100, 0);
- * await page.mouse.move(0, 0);
- * await page.mouse.up();
- * ```
- *
- * **Note**: The mouse events trigger synthetic `MouseEvent`s.
- * This means that it does not fully replicate the functionality of what a normal user
- * would be able to do with their mouse.
- *
- * For example, dragging and selecting text is not possible using `page.mouse`.
- * Instead, you can use the {@link https://developer.mozilla.org/en-US/docs/Web/API/DocumentOrShadowRoot/getSelection | `DocumentOrShadowRoot.getSelection()`} functionality implemented in the platform.
- *
- * @example
- * For example, if you want to select all content between nodes:
- *
- * ```ts
- * await page.evaluate(
- *   (from, to) => {
- *     const selection = from.getRootNode().getSelection();
- *     const range = document.createRange();
- *     range.setStartBefore(from);
- *     range.setEndAfter(to);
- *     selection.removeAllRanges();
- *     selection.addRange(range);
- *   },
- *   fromJSHandle,
- *   toJSHandle
- * );
- * ```
- *
- * If you then would want to copy-paste your selection, you can use the clipboard api:
- *
- * ```ts
- * // The clipboard api does not allow you to copy, unless the tab is focused.
- * await page.bringToFront();
- * await page.evaluate(() => {
- *   // Copy the selected content to the clipboard
- *   document.execCommand('copy');
- *   // Obtain the content of the clipboard as a string
- *   return navigator.clipboard.readText();
- * });
- * ```
- *
- * **Note**: If you want access to the clipboard API,
- * you have to give it permission to do so:
- *
- * ```ts
- * await browser
- *   .defaultBrowserContext()
- *   .overridePermissions('<your origin>', [
- *     'clipboard-read',
- *     'clipboard-write',
- *   ]);
- * ```
- *
- * @public
- */
-export class Mouse {
+export class CDPMouse extends Mouse {
   #client: CDPSession;
-  #keyboard: Keyboard;
-  #x = 0;
-  #y = 0;
-  #button: MouseButton | 'none' = 'none';
+  #keyboard: CDPKeyboard;
 
   /**
    * @internal
    */
-  constructor(client: CDPSession, keyboard: Keyboard) {
+  constructor(client: CDPSession, keyboard: CDPKeyboard) {
+    super();
     this.#client = client;
     this.#keyboard = keyboard;
   }
 
+  #_state: Readonly<MouseState> = {
+    position: {x: 0, y: 0},
+    buttons: MouseButtonFlag.None,
+  };
+  get #state(): MouseState {
+    return Object.assign({...this.#_state}, ...this.#transactions);
+  }
+
+  // Transactions can run in parallel, so we store each of thme in this array.
+  #transactions: Array<Partial<MouseState>> = [];
+  #createTransaction(): {
+    update: (updates: Partial<MouseState>) => void;
+    commit: () => void;
+    rollback: () => void;
+  } {
+    const transaction: Partial<MouseState> = {};
+    this.#transactions.push(transaction);
+    const popTransaction = () => {
+      this.#transactions.splice(this.#transactions.indexOf(transaction), 1);
+    };
+    return {
+      update: (updates: Partial<MouseState>) => {
+        Object.assign(transaction, updates);
+      },
+      commit: () => {
+        this.#_state = {...this.#_state, ...transaction};
+        popTransaction();
+      },
+      rollback: popTransaction,
+    };
+  }
+
   /**
-   * Dispatches a `mousemove` event.
-   * @param x - Horizontal position of the mouse.
-   * @param y - Vertical position of the mouse.
-   * @param options - Optional object. If specified, the `steps` property
-   * sends intermediate `mousemove` events when set to `1` (default).
+   * This is a shortcut for a typical update, commit/rollback lifecycle based on
+   * the error of the action.
    */
-  async move(
+  async #withTransaction(
+    action: (update: (updates: Partial<MouseState>) => void) => Promise<unknown>
+  ): Promise<void> {
+    const {update, commit, rollback} = this.#createTransaction();
+    try {
+      await action(update);
+      commit();
+    } catch (error) {
+      rollback();
+      throw error;
+    }
+  }
+
+  override async reset(): Promise<void> {
+    const actions = [];
+    for (const [flag, button] of [
+      [MouseButtonFlag.Left, MouseButton.Left],
+      [MouseButtonFlag.Middle, MouseButton.Middle],
+      [MouseButtonFlag.Right, MouseButton.Right],
+      [MouseButtonFlag.Forward, MouseButton.Forward],
+      [MouseButtonFlag.Back, MouseButton.Back],
+    ] as const) {
+      if (this.#state.buttons & flag) {
+        actions.push(this.up({button: button}));
+      }
+    }
+    if (this.#state.position.x !== 0 || this.#state.position.y !== 0) {
+      actions.push(this.move(0, 0));
+    }
+    await Promise.all(actions);
+  }
+
+  override async move(
     x: number,
     y: number,
-    options: {steps?: number} = {}
+    options: Readonly<MouseMoveOptions> = {}
   ): Promise<void> {
     const {steps = 1} = options;
-    const fromX = this.#x,
-      fromY = this.#y;
-    this.#x = x;
-    this.#y = y;
+    const from = this.#state.position;
+    const to = {x, y};
     for (let i = 1; i <= steps; i++) {
-      await this.#client.send('Input.dispatchMouseEvent', {
-        type: 'mouseMoved',
-        button: this.#button,
-        x: fromX + (this.#x - fromX) * (i / steps),
-        y: fromY + (this.#y - fromY) * (i / steps),
-        modifiers: this.#keyboard._modifiers,
+      await this.#withTransaction(updateState => {
+        updateState({
+          position: {
+            x: from.x + (to.x - from.x) * (i / steps),
+            y: from.y + (to.y - from.y) * (i / steps),
+          },
+        });
+        const {buttons, position} = this.#state;
+        return this.#client.send('Input.dispatchMouseEvent', {
+          type: 'mouseMoved',
+          modifiers: this.#keyboard._modifiers,
+          buttons,
+          button: getButtonFromPressedButtons(buttons),
+          ...position,
+        });
       });
     }
   }
 
-  /**
-   * Shortcut for `mouse.move`, `mouse.down` and `mouse.up`.
-   * @param x - Horizontal position of the mouse.
-   * @param y - Vertical position of the mouse.
-   * @param options - Optional `MouseOptions`.
-   */
-  async click(
+  override async down(options: Readonly<MouseOptions> = {}): Promise<void> {
+    const {button = MouseButton.Left, clickCount = 1} = options;
+    const flag = getFlag(button);
+    if (!flag) {
+      throw new Error(`Unsupported mouse button: ${button}`);
+    }
+    if (this.#state.buttons & flag) {
+      throw new Error(`'${button}' is already pressed.`);
+    }
+    await this.#withTransaction(updateState => {
+      updateState({
+        buttons: this.#state.buttons | flag,
+      });
+      const {buttons, position} = this.#state;
+      return this.#client.send('Input.dispatchMouseEvent', {
+        type: 'mousePressed',
+        modifiers: this.#keyboard._modifiers,
+        clickCount,
+        buttons,
+        button,
+        ...position,
+      });
+    });
+  }
+
+  override async up(options: Readonly<MouseOptions> = {}): Promise<void> {
+    const {button = MouseButton.Left, clickCount = 1} = options;
+    const flag = getFlag(button);
+    if (!flag) {
+      throw new Error(`Unsupported mouse button: ${button}`);
+    }
+    if (!(this.#state.buttons & flag)) {
+      throw new Error(`'${button}' is not pressed.`);
+    }
+    await this.#withTransaction(updateState => {
+      updateState({
+        buttons: this.#state.buttons & ~flag,
+      });
+      const {buttons, position} = this.#state;
+      return this.#client.send('Input.dispatchMouseEvent', {
+        type: 'mouseReleased',
+        modifiers: this.#keyboard._modifiers,
+        clickCount,
+        buttons,
+        button,
+        ...position,
+      });
+    });
+  }
+
+  override async click(
     x: number,
     y: number,
-    options: MouseOptions & {delay?: number} = {}
+    options: Readonly<MouseClickOptions> = {}
   ): Promise<void> {
-    const {delay = null} = options;
-    await this.move(x, y);
-    await this.down(options);
-    if (delay !== null) {
-      await new Promise(f => {
-        return setTimeout(f, delay);
+    const {delay, count = 1, clickCount = count} = options;
+    if (count < 1) {
+      throw new Error('Click must occur a positive number of times.');
+    }
+    const actions: Array<Promise<void>> = [this.move(x, y)];
+    if (clickCount === count) {
+      for (let i = 1; i < count; ++i) {
+        actions.push(
+          this.down({...options, clickCount: i}),
+          this.up({...options, clickCount: i})
+        );
+      }
+    }
+    actions.push(this.down({...options, clickCount}));
+    if (typeof delay === 'number') {
+      await Promise.all(actions);
+      actions.length = 0;
+      await new Promise(resolve => {
+        setTimeout(resolve, delay);
       });
     }
-    await this.up(options);
+    actions.push(this.up({...options, clickCount}));
+    await Promise.all(actions);
   }
 
-  /**
-   * Dispatches a `mousedown` event.
-   * @param options - Optional `MouseOptions`.
-   */
-  async down(options: MouseOptions = {}): Promise<void> {
-    const {button = 'left', clickCount = 1} = options;
-    this.#button = button;
-    await this.#client.send('Input.dispatchMouseEvent', {
-      type: 'mousePressed',
-      button,
-      x: this.#x,
-      y: this.#y,
-      modifiers: this.#keyboard._modifiers,
-      clickCount,
-    });
-  }
-
-  /**
-   * Dispatches a `mouseup` event.
-   * @param options - Optional `MouseOptions`.
-   */
-  async up(options: MouseOptions = {}): Promise<void> {
-    const {button = 'left', clickCount = 1} = options;
-    this.#button = 'none';
-    await this.#client.send('Input.dispatchMouseEvent', {
-      type: 'mouseReleased',
-      button,
-      x: this.#x,
-      y: this.#y,
-      modifiers: this.#keyboard._modifiers,
-      clickCount,
-    });
-  }
-
-  /**
-   * Dispatches a `mousewheel` event.
-   * @param options - Optional: `MouseWheelOptions`.
-   *
-   * @example
-   * An example of zooming into an element:
-   *
-   * ```ts
-   * await page.goto(
-   *   'https://mdn.mozillademos.org/en-US/docs/Web/API/Element/wheel_event$samples/Scaling_an_element_via_the_wheel?revision=1587366'
-   * );
-   *
-   * const elem = await page.$('div');
-   * const boundingBox = await elem.boundingBox();
-   * await page.mouse.move(
-   *   boundingBox.x + boundingBox.width / 2,
-   *   boundingBox.y + boundingBox.height / 2
-   * );
-   *
-   * await page.mouse.wheel({deltaY: -100});
-   * ```
-   */
-  async wheel(options: MouseWheelOptions = {}): Promise<void> {
+  override async wheel(
+    options: Readonly<MouseWheelOptions> = {}
+  ): Promise<void> {
     const {deltaX = 0, deltaY = 0} = options;
+    const {position, buttons} = this.#state;
     await this.#client.send('Input.dispatchMouseEvent', {
       type: 'mouseWheel',
-      x: this.#x,
-      y: this.#y,
-      deltaX,
-      deltaY,
-      modifiers: this.#keyboard._modifiers,
       pointerType: 'mouse',
+      modifiers: this.#keyboard._modifiers,
+      deltaY,
+      deltaX,
+      buttons,
+      ...position,
     });
   }
 
-  /**
-   * Dispatches a `drag` event.
-   * @param start - starting point for drag
-   * @param target - point to drag to
-   */
-  async drag(start: Point, target: Point): Promise<Protocol.Input.DragData> {
+  override async drag(
+    start: Point,
+    target: Point
+  ): Promise<Protocol.Input.DragData> {
     const promise = new Promise<Protocol.Input.DragData>(resolve => {
       this.#client.once('Input.dragIntercepted', event => {
         return resolve(event.data);
@@ -574,12 +497,10 @@ export class Mouse {
     return promise;
   }
 
-  /**
-   * Dispatches a `dragenter` event.
-   * @param target - point for emitting `dragenter` event
-   * @param data - drag data containing items and operations mask
-   */
-  async dragEnter(target: Point, data: Protocol.Input.DragData): Promise<void> {
+  override async dragEnter(
+    target: Point,
+    data: Protocol.Input.DragData
+  ): Promise<void> {
     await this.#client.send('Input.dispatchDragEvent', {
       type: 'dragEnter',
       x: target.x,
@@ -589,12 +510,10 @@ export class Mouse {
     });
   }
 
-  /**
-   * Dispatches a `dragover` event.
-   * @param target - point for emitting `dragover` event
-   * @param data - drag data containing items and operations mask
-   */
-  async dragOver(target: Point, data: Protocol.Input.DragData): Promise<void> {
+  override async dragOver(
+    target: Point,
+    data: Protocol.Input.DragData
+  ): Promise<void> {
     await this.#client.send('Input.dispatchDragEvent', {
       type: 'dragOver',
       x: target.x,
@@ -604,12 +523,10 @@ export class Mouse {
     });
   }
 
-  /**
-   * Performs a dragenter, dragover, and drop in sequence.
-   * @param target - point to drop on
-   * @param data - drag data containing items and operations mask
-   */
-  async drop(target: Point, data: Protocol.Input.DragData): Promise<void> {
+  override async drop(
+    target: Point,
+    data: Protocol.Input.DragData
+  ): Promise<void> {
     await this.#client.send('Input.dispatchDragEvent', {
       type: 'drop',
       x: target.x,
@@ -619,15 +536,7 @@ export class Mouse {
     });
   }
 
-  /**
-   * Performs a drag, dragenter, dragover, and drop in sequence.
-   * @param start - point to drag from
-   * @param target - point to drop on
-   * @param options - An object of options. Accepts delay which,
-   * if specified, is the time to wait between `dragover` and `drop` in milliseconds.
-   * Defaults to 0.
-   */
-  async dragAndDrop(
+  override async dragAndDrop(
     start: Point,
     target: Point,
     options: {delay?: number} = {}
@@ -647,37 +556,27 @@ export class Mouse {
 }
 
 /**
- * The Touchscreen class exposes touchscreen events.
- * @public
+ * @internal
  */
-export class Touchscreen {
+export class CDPTouchscreen extends Touchscreen {
   #client: CDPSession;
-  #keyboard: Keyboard;
+  #keyboard: CDPKeyboard;
 
   /**
    * @internal
    */
-  constructor(client: CDPSession, keyboard: Keyboard) {
+  constructor(client: CDPSession, keyboard: CDPKeyboard) {
+    super();
     this.#client = client;
     this.#keyboard = keyboard;
   }
 
-  /**
-   * Dispatches a `touchstart` and `touchend` event.
-   * @param x - Horizontal position of the tap.
-   * @param y - Vertical position of the tap.
-   */
-  async tap(x: number, y: number): Promise<void> {
+  override async tap(x: number, y: number): Promise<void> {
     await this.touchStart(x, y);
     await this.touchEnd();
   }
 
-  /**
-   * Dispatches a `touchstart` event.
-   * @param x - Horizontal position of the tap.
-   * @param y - Vertical position of the tap.
-   */
-  async touchStart(x: number, y: number): Promise<void> {
+  override async touchStart(x: number, y: number): Promise<void> {
     const touchPoints = [{x: Math.round(x), y: Math.round(y)}];
     await this.#client.send('Input.dispatchTouchEvent', {
       type: 'touchStart',
@@ -685,12 +584,8 @@ export class Touchscreen {
       modifiers: this.#keyboard._modifiers,
     });
   }
-  /**
-   * Dispatches a `touchMove` event.
-   * @param x - Horizontal position of the move.
-   * @param y - Vertical position of the move.
-   */
-  async touchMove(x: number, y: number): Promise<void> {
+
+  override async touchMove(x: number, y: number): Promise<void> {
     const movePoints = [{x: Math.round(x), y: Math.round(y)}];
     await this.#client.send('Input.dispatchTouchEvent', {
       type: 'touchMove',
@@ -698,10 +593,8 @@ export class Touchscreen {
       modifiers: this.#keyboard._modifiers,
     });
   }
-  /**
-   * Dispatches a `touchend` event.
-   */
-  async touchEnd(): Promise<void> {
+
+  override async touchEnd(): Promise<void> {
     await this.#client.send('Input.dispatchTouchEvent', {
       type: 'touchEnd',
       touchPoints: [],

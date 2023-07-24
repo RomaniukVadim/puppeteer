@@ -16,11 +16,12 @@
 
 import {Protocol} from 'devtools-protocol';
 
+import {Frame} from '../api/Frame.js';
 import {CDPSession} from '../common/Connection.js';
 import {ExecutionContext} from '../common/ExecutionContext.js';
-import {Frame} from '../common/Frame.js';
-import {MouseButton} from '../common/Input.js';
+import {getQueryHandlerAndSelector} from '../common/GetQueryHandler.js';
 import {WaitForSelectorOptions} from '../common/IsolatedWorld.js';
+import {LazyArg} from '../common/LazyArg.js';
 import {
   ElementFor,
   EvaluateFuncWith,
@@ -29,7 +30,15 @@ import {
   NodeFor,
 } from '../common/types.js';
 import {KeyInput} from '../common/USKeyboardLayout.js';
+import {isString, withSourcePuppeteerURLIfNone} from '../common/util.js';
+import {assert} from '../util/assert.js';
+import {AsyncIterableUtil} from '../util/AsyncIterableUtil.js';
 
+import {
+  KeyPressOptions,
+  MouseClickOptions,
+  KeyboardTypeOptions,
+} from './Input.js';
 import {JSHandle} from './JSHandle.js';
 import {ScreenshotOptions} from './Page.js';
 
@@ -76,39 +85,11 @@ export interface Offset {
 /**
  * @public
  */
-export interface ClickOptions {
-  /**
-   * Time to wait between `mousedown` and `mouseup` in milliseconds.
-   *
-   * @defaultValue 0
-   */
-  delay?: number;
-  /**
-   * @defaultValue 'left'
-   */
-  button?: MouseButton;
-  /**
-   * @defaultValue 1
-   */
-  clickCount?: number;
+export interface ClickOptions extends MouseClickOptions {
   /**
    * Offset for the clickable point relative to the top-left corner of the border box.
    */
   offset?: Offset;
-}
-
-/**
- * @public
- */
-export interface PressOptions {
-  /**
-   * Time to wait between `keydown` and `keyup` in milliseconds. Defaults to 0.
-   */
-  delay?: number;
-  /**
-   * If specified, generates an input event with this text.
-   */
-  text?: string;
 }
 
 /**
@@ -154,7 +135,7 @@ export interface Point {
  */
 
 export class ElementHandle<
-  ElementType extends Node = Element
+  ElementType extends Node = Element,
 > extends JSHandle<ElementType> {
   /**
    * @internal
@@ -214,7 +195,7 @@ export class ElementHandle<
     Func extends EvaluateFuncWith<ElementType, Params> = EvaluateFuncWith<
       ElementType,
       Params
-    >
+    >,
   >(
     pageFunction: Func | string,
     ...args: Params
@@ -230,7 +211,7 @@ export class ElementHandle<
     Func extends EvaluateFuncWith<ElementType, Params> = EvaluateFuncWith<
       ElementType,
       Params
-    >
+    >,
   >(
     pageFunction: Func | string,
     ...args: Params
@@ -290,11 +271,13 @@ export class ElementHandle<
    */
   async $<Selector extends string>(
     selector: Selector
-  ): Promise<ElementHandle<NodeFor<Selector>> | null>;
-  async $<Selector extends string>(): Promise<ElementHandle<
-    NodeFor<Selector>
-  > | null> {
-    throw new Error('Not implemented');
+  ): Promise<ElementHandle<NodeFor<Selector>> | null> {
+    const {updatedSelector, QueryHandler} =
+      getQueryHandlerAndSelector(selector);
+    return (await QueryHandler.queryOne(
+      this,
+      updatedSelector
+    )) as ElementHandle<NodeFor<Selector>> | null;
   }
 
   /**
@@ -306,11 +289,12 @@ export class ElementHandle<
    */
   async $$<Selector extends string>(
     selector: Selector
-  ): Promise<Array<ElementHandle<NodeFor<Selector>>>>;
-  async $$<Selector extends string>(): Promise<
-    Array<ElementHandle<NodeFor<Selector>>>
-  > {
-    throw new Error('Not implemented');
+  ): Promise<Array<ElementHandle<NodeFor<Selector>>>> {
+    const {updatedSelector, QueryHandler} =
+      getQueryHandlerAndSelector(selector);
+    return AsyncIterableUtil.collect(
+      QueryHandler.queryAll(this, updatedSelector)
+    ) as Promise<Array<ElementHandle<NodeFor<Selector>>>>;
   }
 
   /**
@@ -345,14 +329,22 @@ export class ElementHandle<
     Func extends EvaluateFuncWith<NodeFor<Selector>, Params> = EvaluateFuncWith<
       NodeFor<Selector>,
       Params
-    >
+    >,
   >(
     selector: Selector,
     pageFunction: Func | string,
     ...args: Params
-  ): Promise<Awaited<ReturnType<Func>>>;
-  async $eval(): Promise<unknown> {
-    throw new Error('Not implemented');
+  ): Promise<Awaited<ReturnType<Func>>> {
+    pageFunction = withSourcePuppeteerURLIfNone(this.$eval.name, pageFunction);
+    const elementHandle = await this.$(selector);
+    if (!elementHandle) {
+      throw new Error(
+        `Error: failed to find element matching selector "${selector}"`
+      );
+    }
+    const result = await elementHandle.evaluate(pageFunction, ...args);
+    await elementHandle.dispose();
+    return result;
   }
 
   /**
@@ -394,14 +386,28 @@ export class ElementHandle<
     Func extends EvaluateFuncWith<
       Array<NodeFor<Selector>>,
       Params
-    > = EvaluateFuncWith<Array<NodeFor<Selector>>, Params>
+    > = EvaluateFuncWith<Array<NodeFor<Selector>>, Params>,
   >(
     selector: Selector,
     pageFunction: Func | string,
     ...args: Params
-  ): Promise<Awaited<ReturnType<Func>>>;
-  async $$eval(): Promise<unknown> {
-    throw new Error('Not implemented');
+  ): Promise<Awaited<ReturnType<Func>>> {
+    pageFunction = withSourcePuppeteerURLIfNone(this.$$eval.name, pageFunction);
+    const results = await this.$$(selector);
+    const elements = await this.evaluateHandle(
+      (_, ...elements) => {
+        return elements;
+      },
+      ...results
+    );
+    const [result] = await Promise.all([
+      elements.evaluate(pageFunction, ...args),
+      ...results.map(results => {
+        return results.dispose();
+      }),
+    ]);
+    await elements.dispose();
+    return result;
   }
 
   /**
@@ -416,9 +422,11 @@ export class ElementHandle<
    * If there are no such elements, the method will resolve to an empty array.
    * @param expression - Expression to {@link https://developer.mozilla.org/en-US/docs/Web/API/Document/evaluate | evaluate}
    */
-  async $x(expression: string): Promise<Array<ElementHandle<Node>>>;
-  async $x(): Promise<Array<ElementHandle<Node>>> {
-    throw new Error('Not implemented');
+  async $x(expression: string): Promise<Array<ElementHandle<Node>>> {
+    if (expression.startsWith('//')) {
+      expression = `.${expression}`;
+    }
+    return this.$$(`xpath/${expression}`);
   }
 
   /**
@@ -460,12 +468,49 @@ export class ElementHandle<
    */
   async waitForSelector<Selector extends string>(
     selector: Selector,
-    options?: WaitForSelectorOptions
-  ): Promise<ElementHandle<NodeFor<Selector>> | null>;
-  async waitForSelector<Selector extends string>(): Promise<ElementHandle<
-    NodeFor<Selector>
-  > | null> {
-    throw new Error('Not implemented');
+    options: WaitForSelectorOptions = {}
+  ): Promise<ElementHandle<NodeFor<Selector>> | null> {
+    const {updatedSelector, QueryHandler} =
+      getQueryHandlerAndSelector(selector);
+    return (await QueryHandler.waitFor(
+      this,
+      updatedSelector,
+      options
+    )) as ElementHandle<NodeFor<Selector>> | null;
+  }
+
+  async #checkVisibility(visibility: boolean): Promise<boolean> {
+    const element = await this.frame.isolatedRealm().adoptHandle(this);
+    try {
+      return await this.frame.isolatedRealm().evaluate(
+        async (PuppeteerUtil, element, visibility) => {
+          return Boolean(PuppeteerUtil.checkVisibility(element, visibility));
+        },
+        LazyArg.create(context => {
+          return context.puppeteerUtil;
+        }),
+        element,
+        visibility
+      );
+    } finally {
+      await element.dispose();
+    }
+  }
+
+  /**
+   * Checks if an element is visible using the same mechanism as
+   * {@link ElementHandle.waitForSelector}.
+   */
+  async isVisible(): Promise<boolean> {
+    return this.#checkVisibility(true);
+  }
+
+  /**
+   * Checks if an element is hidden using the same mechanism as
+   * {@link ElementHandle.waitForSelector}.
+   */
+  async isHidden(): Promise<boolean> {
+    return this.#checkVisibility(false);
   }
 
   /**
@@ -484,6 +529,7 @@ export class ElementHandle<
    * If `xpath` starts with `//` instead of `.//`, the dot will be appended
    * automatically.
    *
+   * @example
    * This method works across navigation.
    *
    * ```ts
@@ -531,14 +577,16 @@ export class ElementHandle<
    */
   async waitForXPath(
     xpath: string,
-    options?: {
+    options: {
       visible?: boolean;
       hidden?: boolean;
       timeout?: number;
+    } = {}
+  ): Promise<ElementHandle<Node> | null> {
+    if (xpath.startsWith('//')) {
+      xpath = `.${xpath}`;
     }
-  ): Promise<ElementHandle<Node> | null>;
-  async waitForXPath(): Promise<ElementHandle<Node> | null> {
-    throw new Error('Not implemented');
+    return this.waitForSelector(`xpath/${xpath}`, options);
   }
 
   /**
@@ -561,12 +609,15 @@ export class ElementHandle<
    * automatically disposed.**
    */
   async toElement<
-    K extends keyof HTMLElementTagNameMap | keyof SVGElementTagNameMap
-  >(tagName: K): Promise<HandleFor<ElementFor<K>>>;
-  async toElement<
-    K extends keyof HTMLElementTagNameMap | keyof SVGElementTagNameMap
-  >(): Promise<HandleFor<ElementFor<K>>> {
-    throw new Error('Not implemented');
+    K extends keyof HTMLElementTagNameMap | keyof SVGElementTagNameMap,
+  >(tagName: K): Promise<HandleFor<ElementFor<K>>> {
+    const isMatchingTagName = await this.evaluate((node, tagName) => {
+      return node.nodeName === tagName.toUpperCase();
+    }, tagName);
+    if (!isMatchingTagName) {
+      throw new Error(`Element is not a(n) \`${tagName}\` element`);
+    }
+    return this as unknown as HandleFor<ElementFor<K>>;
   }
 
   /**
@@ -587,7 +638,7 @@ export class ElementHandle<
 
   /**
    * This method scrolls element into view if needed, and then
-   * uses {@link Page.mouse} to hover over the center of the element.
+   * uses {@link Page} to hover over the center of the element.
    * If the element is detached from DOM, the method throws an error.
    */
   async hover(this: ElementHandle<Element>): Promise<void> {
@@ -596,7 +647,7 @@ export class ElementHandle<
 
   /**
    * This method scrolls element into view if needed, and then
-   * uses {@link Page.mouse} to click in the center of the element.
+   * uses {@link Page | Page.mouse} to click in the center of the element.
    * If the element is detached from DOM, the method throws an error.
    */
   async click(
@@ -679,24 +730,64 @@ export class ElementHandle<
    * `multiple` attribute, all values are considered, otherwise only the first
    * one is taken into account.
    */
-  async select(...values: string[]): Promise<string[]>;
-  async select(): Promise<string[]> {
-    throw new Error('Not implemented');
+  async select(...values: string[]): Promise<string[]> {
+    for (const value of values) {
+      assert(
+        isString(value),
+        'Values must be strings. Found value "' +
+          value +
+          '" of type "' +
+          typeof value +
+          '"'
+      );
+    }
+
+    return this.evaluate((element, vals): string[] => {
+      const values = new Set(vals);
+      if (!(element instanceof HTMLSelectElement)) {
+        throw new Error('Element is not a <select> element.');
+      }
+
+      const selectedValues = new Set<string>();
+      if (!element.multiple) {
+        for (const option of element.options) {
+          option.selected = false;
+        }
+        for (const option of element.options) {
+          if (values.has(option.value)) {
+            option.selected = true;
+            selectedValues.add(option.value);
+            break;
+          }
+        }
+      } else {
+        for (const option of element.options) {
+          option.selected = values.has(option.value);
+          if (option.selected) {
+            selectedValues.add(option.value);
+          }
+        }
+      }
+      element.dispatchEvent(new Event('input', {bubbles: true}));
+      element.dispatchEvent(new Event('change', {bubbles: true}));
+      return [...selectedValues.values()];
+    }, values);
   }
 
   /**
-   * This method expects `elementHandle` to point to an
-   * {@link https://developer.mozilla.org/en-US/docs/Web/HTML/Element/input | input element}.
+   * Sets the value of an
+   * {@link https://developer.mozilla.org/en-US/docs/Web/HTML/Element/input | input element}
+   * to the given file paths.
    *
-   * @param filePaths - Sets the value of the file input to these paths.
-   * If a path is relative, then it is resolved against the
+   * @remarks This will not validate whether the file paths exists. Also, if a
+   * path is relative, then it is resolved against the
    * {@link https://nodejs.org/api/process.html#process_process_cwd | current working directory}.
-   * Note for locals script connecting to remote chrome environments,
-   * paths must be absolute.
+   * For locals script connecting to remote chrome environments, paths must be
+   * absolute.
    */
   async uploadFile(
     this: ElementHandle<HTMLInputElement>,
-    ...filePaths: string[]
+    ...paths: string[]
   ): Promise<void>;
   async uploadFile(this: ElementHandle<HTMLInputElement>): Promise<void> {
     throw new Error('Not implemented');
@@ -727,7 +818,12 @@ export class ElementHandle<
    * Calls {@link https://developer.mozilla.org/en-US/docs/Web/API/HTMLElement/focus | focus} on the element.
    */
   async focus(): Promise<void> {
-    throw new Error('Not implemented');
+    await this.evaluate(element => {
+      if (!(element instanceof HTMLElement)) {
+        throw new Error('Cannot focus non-HTMLElement');
+      }
+      return element.focus();
+    });
   }
 
   /**
@@ -752,8 +848,13 @@ export class ElementHandle<
    * await elementHandle.type('some text');
    * await elementHandle.press('Enter');
    * ```
+   *
+   * @param options - Delay in milliseconds. Defaults to 0.
    */
-  async type(text: string, options?: {delay: number}): Promise<void>;
+  async type(
+    text: string,
+    options?: Readonly<KeyboardTypeOptions>
+  ): Promise<void>;
   async type(): Promise<void> {
     throw new Error('Not implemented');
   }
@@ -772,7 +873,10 @@ export class ElementHandle<
    * @param key - Name of key to press, such as `ArrowLeft`.
    * See {@link KeyInput} for a list of all key names.
    */
-  async press(key: KeyInput, options?: PressOptions): Promise<void>;
+  async press(
+    key: KeyInput,
+    options?: Readonly<KeyPressOptions>
+  ): Promise<void>;
   async press(): Promise<void> {
     throw new Error('Not implemented');
   }
@@ -811,15 +915,172 @@ export class ElementHandle<
   }
 
   /**
-   * Resolves to true if the element is visible in the current viewport.
+   * @internal
+   */
+  protected async assertConnectedElement(): Promise<void> {
+    const error = await this.evaluate(
+      async (element): Promise<string | undefined> => {
+        if (!element.isConnected) {
+          return 'Node is detached from document';
+        }
+        if (element.nodeType !== Node.ELEMENT_NODE) {
+          return 'Node is not of type HTMLElement';
+        }
+        return;
+      }
+    );
+
+    if (error) {
+      throw new Error(error);
+    }
+  }
+
+  /**
+   * @internal
+   */
+  protected async scrollIntoViewIfNeeded(
+    this: ElementHandle<Element>
+  ): Promise<void> {
+    if (
+      await this.isIntersectingViewport({
+        threshold: 1,
+      })
+    ) {
+      return;
+    }
+    await this.scrollIntoView();
+  }
+
+  /**
+   * Resolves to true if the element is visible in the current viewport. If an
+   * element is an SVG, we check if the svg owner element is in the viewport
+   * instead. See https://crbug.com/963246.
+   *
+   * @param options - Threshold for the intersection between 0 (no intersection) and 1
+   * (full intersection). Defaults to 1.
    */
   async isIntersectingViewport(
     this: ElementHandle<Element>,
     options?: {
       threshold?: number;
     }
-  ): Promise<boolean>;
-  async isIntersectingViewport(): Promise<boolean> {
+  ): Promise<boolean> {
+    await this.assertConnectedElement();
+
+    const {threshold = 0} = options ?? {};
+    const svgHandle = await this.#asSVGElementHandle(this);
+    const intersectionTarget: ElementHandle<Element> = svgHandle
+      ? await this.#getOwnerSVGElement(svgHandle)
+      : this;
+
+    try {
+      return await intersectionTarget.evaluate(async (element, threshold) => {
+        const visibleRatio = await new Promise<number>(resolve => {
+          const observer = new IntersectionObserver(entries => {
+            resolve(entries[0]!.intersectionRatio);
+            observer.disconnect();
+          });
+          observer.observe(element);
+        });
+        return threshold === 1 ? visibleRatio === 1 : visibleRatio > threshold;
+      }, threshold);
+    } finally {
+      if (intersectionTarget !== this) {
+        await intersectionTarget.dispose();
+      }
+    }
+  }
+
+  /**
+   * Scrolls the element into view using either the automation protocol client
+   * or by calling element.scrollIntoView.
+   */
+  async scrollIntoView(this: ElementHandle<Element>): Promise<void> {
+    await this.assertConnectedElement();
+    await this.evaluate(async (element): Promise<void> => {
+      element.scrollIntoView({
+        block: 'center',
+        inline: 'center',
+        behavior: 'instant',
+      });
+    });
+  }
+
+  /**
+   * Returns true if an element is an SVGElement (included svg, path, rect
+   * etc.).
+   */
+  async #asSVGElementHandle(
+    handle: ElementHandle<Element>
+  ): Promise<ElementHandle<SVGElement> | null> {
+    if (
+      await handle.evaluate(element => {
+        return element instanceof SVGElement;
+      })
+    ) {
+      return handle as ElementHandle<SVGElement>;
+    } else {
+      return null;
+    }
+  }
+
+  async #getOwnerSVGElement(
+    handle: ElementHandle<SVGElement>
+  ): Promise<ElementHandle<SVGSVGElement>> {
+    // SVGSVGElement.ownerSVGElement === null.
+    return await handle.evaluateHandle(element => {
+      if (element instanceof SVGSVGElement) {
+        return element;
+      }
+      return element.ownerSVGElement!;
+    });
+  }
+
+  /**
+   * @internal
+   */
+  assertElementHasWorld(): asserts this {
+    assert(this.executionContext()._world);
+  }
+
+  /**
+   * If the element is a form input, you can use {@link ElementHandle.autofill}
+   * to test if the form is compatible with the browser's autofill
+   * implementation. Throws an error if the form cannot be autofilled.
+   *
+   * @remarks
+   *
+   * Currently, Puppeteer supports auto-filling credit card information only and
+   * in Chrome in the new headless and headful modes only.
+   *
+   * ```ts
+   * // Select an input on the credit card form.
+   * const name = await page.waitForSelector('form #name');
+   * // Trigger autofill with the desired data.
+   * await name.autofill({
+   *   creditCard: {
+   *     number: '4444444444444444',
+   *     name: 'John Smith',
+   *     expiryMonth: '01',
+   *     expiryYear: '2030',
+   *     cvc: '123',
+   *   },
+   * });
+   * ```
+   */
+  autofill(data: AutofillData): Promise<void>;
+  autofill(): Promise<void> {
     throw new Error('Not implemented');
   }
+}
+
+export interface AutofillData {
+  creditCard: {
+    // See https://chromedevtools.github.io/devtools-protocol/tot/Autofill/#type-CreditCard.
+    number: string;
+    name: string;
+    expiryMonth: string;
+    expiryYear: string;
+    cvc: string;
+  };
 }

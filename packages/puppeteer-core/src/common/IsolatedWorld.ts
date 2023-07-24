@@ -16,17 +16,18 @@
 
 import {Protocol} from 'devtools-protocol';
 
-import type {ElementHandle} from '../api/ElementHandle.js';
+import type {ClickOptions, ElementHandle} from '../api/ElementHandle.js';
+import {Realm} from '../api/Frame.js';
+import {KeyboardTypeOptions} from '../api/Input.js';
 import {JSHandle} from '../api/JSHandle.js';
 import {assert} from '../util/assert.js';
-import {createDeferredPromise} from '../util/DeferredPromise.js';
+import {Deferred} from '../util/Deferred.js';
 
 import {Binding} from './Binding.js';
 import {CDPSession} from './Connection.js';
 import {ExecutionContext} from './ExecutionContext.js';
 import {Frame} from './Frame.js';
 import {FrameManager} from './FrameManager.js';
-import {MouseButton} from './Input.js';
 import {MAIN_WORLD, PUPPETEER_WORLD} from './IsolatedWorlds.js';
 import {LifecycleWatcher, PuppeteerLifeCycleEvent} from './LifecycleWatcher.js';
 import {TimeoutSettings} from './TimeoutSettings.js';
@@ -38,7 +39,14 @@ import {
   InnerLazyParams,
   NodeFor,
 } from './types.js';
-import {addPageBinding, createJSHandle, debugError} from './util.js';
+import {
+  addPageBinding,
+  createJSHandle,
+  debugError,
+  getPageContent,
+  setPageContent,
+  withSourcePuppeteerURLIfNone,
+} from './util.js';
 import {TaskManager, WaitTask} from './WaitTask.js';
 
 /**
@@ -64,9 +72,13 @@ export interface WaitForSelectorOptions {
    *
    * The default value can be changed by using {@link Page.setDefaultTimeout}
    *
-   * @defaultValue `30000` (30 seconds)
+   * @defaultValue `30_000` (30 seconds)
    */
   timeout?: number;
+  /**
+   * A signal object that allows you to cancel a waitForSelector call.
+   */
+  signal?: AbortSignal;
 }
 
 /**
@@ -89,10 +101,10 @@ export interface IsolatedWorldChart {
 /**
  * @internal
  */
-export class IsolatedWorld {
+export class IsolatedWorld implements Realm {
   #frame: Frame;
   #document?: ElementHandle<Document>;
-  #context = createDeferredPromise<ExecutionContext>();
+  #context = Deferred.create<ExecutionContext>();
   #detached = false;
 
   // Set of bindings that have been registered in the current context.
@@ -135,13 +147,13 @@ export class IsolatedWorld {
 
   clearContext(): void {
     this.#document = undefined;
-    this.#context = createDeferredPromise();
+    this.#context = Deferred.create();
   }
 
   setContext(context: ExecutionContext): void {
     this.#contextBindings.clear();
     this.#context.resolve(context);
-    this.#taskManager.rerunAll();
+    void this.#taskManager.rerunAll();
   }
 
   hasContext(): boolean {
@@ -165,27 +177,35 @@ export class IsolatedWorld {
     if (this.#context === null) {
       throw new Error(`Execution content promise is missing`);
     }
-    return this.#context;
+    return this.#context.valueOrThrow();
   }
 
   async evaluateHandle<
     Params extends unknown[],
-    Func extends EvaluateFunc<Params> = EvaluateFunc<Params>
+    Func extends EvaluateFunc<Params> = EvaluateFunc<Params>,
   >(
     pageFunction: Func | string,
     ...args: Params
   ): Promise<HandleFor<Awaited<ReturnType<Func>>>> {
+    pageFunction = withSourcePuppeteerURLIfNone(
+      this.evaluateHandle.name,
+      pageFunction
+    );
     const context = await this.executionContext();
     return context.evaluateHandle(pageFunction, ...args);
   }
 
   async evaluate<
     Params extends unknown[],
-    Func extends EvaluateFunc<Params> = EvaluateFunc<Params>
+    Func extends EvaluateFunc<Params> = EvaluateFunc<Params>,
   >(
     pageFunction: Func | string,
     ...args: Params
   ): Promise<Awaited<ReturnType<Func>>> {
+    pageFunction = withSourcePuppeteerURLIfNone(
+      this.evaluate.name,
+      pageFunction
+    );
     const context = await this.executionContext();
     return context.evaluate(pageFunction, ...args);
   }
@@ -226,12 +246,13 @@ export class IsolatedWorld {
     Func extends EvaluateFuncWith<NodeFor<Selector>, Params> = EvaluateFuncWith<
       NodeFor<Selector>,
       Params
-    >
+    >,
   >(
     selector: Selector,
     pageFunction: Func | string,
     ...args: Params
   ): Promise<Awaited<ReturnType<Func>>> {
+    pageFunction = withSourcePuppeteerURLIfNone(this.$eval.name, pageFunction);
     const document = await this.document();
     return document.$eval(selector, pageFunction, ...args);
   }
@@ -242,27 +263,19 @@ export class IsolatedWorld {
     Func extends EvaluateFuncWith<
       Array<NodeFor<Selector>>,
       Params
-    > = EvaluateFuncWith<Array<NodeFor<Selector>>, Params>
+    > = EvaluateFuncWith<Array<NodeFor<Selector>>, Params>,
   >(
     selector: Selector,
     pageFunction: Func | string,
     ...args: Params
   ): Promise<Awaited<ReturnType<Func>>> {
+    pageFunction = withSourcePuppeteerURLIfNone(this.$$eval.name, pageFunction);
     const document = await this.document();
     return document.$$eval(selector, pageFunction, ...args);
   }
 
   async content(): Promise<string> {
-    return await this.evaluate(() => {
-      let retVal = '';
-      if (document.doctype) {
-        retVal = new XMLSerializer().serializeToString(document.doctype);
-      }
-      if (document.documentElement) {
-        retVal += document.documentElement.outerHTML;
-      }
-      return retVal;
-    });
+    return await this.evaluate(getPageContent);
   }
 
   async setContent(
@@ -276,21 +289,17 @@ export class IsolatedWorld {
       waitUntil = ['load'],
       timeout = this.#timeoutSettings.navigationTimeout(),
     } = options;
-    // We rely upon the fact that document.open() will reset frame lifecycle with "init"
-    // lifecycle event. @see https://crrev.com/608658
-    await this.evaluate(html => {
-      document.open();
-      document.write(html);
-      document.close();
-    }, html);
+
+    await setPageContent(this, html);
+
     const watcher = new LifecycleWatcher(
       this.#frameManager,
       this.#frame,
       waitUntil,
       timeout
     );
-    const error = await Promise.race([
-      watcher.timeoutOrTerminationPromise(),
+    const error = await Deferred.race<void | Error | undefined>([
+      watcher.terminationPromise(),
       watcher.lifecyclePromise(),
     ]);
     watcher.dispose();
@@ -301,7 +310,7 @@ export class IsolatedWorld {
 
   async click(
     selector: string,
-    options: {delay?: number; button?: MouseButton; clickCount?: number}
+    options?: Readonly<ClickOptions>
   ): Promise<void> {
     const handle = await this.$(selector);
     assert(handle, `No element found for selector: ${selector}`);
@@ -341,7 +350,7 @@ export class IsolatedWorld {
   async type(
     selector: string,
     text: string,
-    options?: {delay: number}
+    options?: Readonly<KeyboardTypeOptions>
   ): Promise<void> {
     const handle = await this.$(selector);
     assert(handle, `No element found for selector: ${selector}`);
@@ -362,10 +371,18 @@ export class IsolatedWorld {
 
     await this.#mutex.acquire();
     try {
-      await context._client.send('Runtime.addBinding', {
-        name,
-        executionContextName: context._contextName,
-      });
+      await context._client.send(
+        'Runtime.addBinding',
+        context._contextName
+          ? {
+              name,
+              executionContextName: context._contextName,
+            }
+          : {
+              name,
+              executionContextId: context._contextId,
+            }
+      );
 
       await context.evaluate(addPageBinding, 'internal', name);
 
@@ -410,26 +427,31 @@ export class IsolatedWorld {
       return;
     }
 
-    const context = await this.#context;
-    if (event.executionContextId !== context._contextId) {
-      return;
-    }
+    try {
+      const context = await this.#context.valueOrThrow();
+      if (event.executionContextId !== context._contextId) {
+        return;
+      }
 
-    const binding = this._bindings.get(name);
-    await binding?.run(context, seq, args, isTrivial);
+      const binding = this._bindings.get(name);
+      await binding?.run(context, seq, args, isTrivial);
+    } catch (err) {
+      debugError(err);
+    }
   };
 
   waitForFunction<
     Params extends unknown[],
     Func extends EvaluateFunc<InnerLazyParams<Params>> = EvaluateFunc<
       InnerLazyParams<Params>
-    >
+    >,
   >(
     pageFunction: Func | string,
     options: {
       polling?: 'raf' | 'mutation' | number;
       timeout?: number;
       root?: ElementHandle<Node>;
+      signal?: AbortSignal;
     } = {},
     ...args: Params
   ): Promise<HandleFor<Awaited<ReturnType<Func>>>> {
@@ -437,6 +459,7 @@ export class IsolatedWorld {
       polling = 'raf',
       timeout = this.#timeoutSettings.timeout(),
       root,
+      signal,
     } = options;
     if (typeof polling === 'number' && polling < 0) {
       throw new Error('Cannot poll with non-positive interval');
@@ -447,6 +470,7 @@ export class IsolatedWorld {
         polling,
         root,
         timeout,
+        signal,
       },
       pageFunction as unknown as
         | ((...args: unknown[]) => Promise<Awaited<ReturnType<Func>>>)
@@ -511,12 +535,9 @@ class Mutex {
       this.#locked = true;
       return Promise.resolve();
     }
-    let resolve!: () => void;
-    const promise = new Promise<void>(res => {
-      resolve = res;
-    });
-    this.#acquirers.push(resolve);
-    return promise;
+    const deferred = Deferred.create<void>();
+    this.#acquirers.push(deferred.resolve.bind(deferred));
+    return deferred.valueOrThrow();
   }
 
   release(): void {

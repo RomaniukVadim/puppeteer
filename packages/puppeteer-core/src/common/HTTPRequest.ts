@@ -15,6 +15,7 @@
  */
 import {Protocol} from 'devtools-protocol';
 
+import {Frame} from '../api/Frame.js';
 import {
   ContinueRequestOverrides,
   ErrorCode,
@@ -31,7 +32,6 @@ import {assert} from '../util/assert.js';
 
 import {CDPSession} from './Connection.js';
 import {ProtocolError} from './Errors.js';
-import {Frame} from './Frame.js';
 import {debugError, isString} from './util.js';
 
 /**
@@ -63,7 +63,7 @@ export class HTTPRequest extends BaseHTTPRequest {
     action: InterceptResolutionAction.None,
   };
   #interceptHandlers: Array<() => void | PromiseLike<any>>;
-  #initiator: Protocol.Network.Initiator;
+  #initiator?: Protocol.Network.Initiator;
 
   override get client(): CDPSession {
     return this.#client;
@@ -74,27 +74,52 @@ export class HTTPRequest extends BaseHTTPRequest {
     frame: Frame | null,
     interceptionId: string | undefined,
     allowInterception: boolean,
-    event: Protocol.Network.RequestWillBeSentEvent,
+    data: {
+      /**
+       * Request identifier.
+       */
+      requestId: Protocol.Network.RequestId;
+      /**
+       * Loader identifier. Empty string if the request is fetched from worker.
+       */
+      loaderId?: Protocol.Network.LoaderId;
+      /**
+       * URL of the document this request is loaded for.
+       */
+      documentURL?: string;
+      /**
+       * Request data.
+       */
+      request: Protocol.Network.Request;
+      /**
+       * Request initiator.
+       */
+      initiator?: Protocol.Network.Initiator;
+      /**
+       * Type of this resource.
+       */
+      type?: Protocol.Network.ResourceType;
+    },
     redirectChain: HTTPRequest[]
   ) {
     super();
     this.#client = client;
-    this._requestId = event.requestId;
+    this._requestId = data.requestId;
     this.#isNavigationRequest =
-      event.requestId === event.loaderId && event.type === 'Document';
+      data.requestId === data.loaderId && data.type === 'Document';
     this._interceptionId = interceptionId;
     this.#allowInterception = allowInterception;
-    this.#url = event.request.url;
-    this.#resourceType = (event.type || 'other').toLowerCase() as ResourceType;
-    this.#method = event.request.method;
-    this.#postData = event.request.postData;
+    this.#url = data.request.url;
+    this.#resourceType = (data.type || 'other').toLowerCase() as ResourceType;
+    this.#method = data.request.method;
+    this.#postData = data.request.postData;
     this.#frame = frame;
     this._redirectChain = redirectChain;
     this.#continueRequestOverrides = {};
     this.#interceptHandlers = [];
-    this.#initiator = event.initiator;
+    this.#initiator = data.initiator;
 
-    for (const [key, value] of Object.entries(event.request.headers)) {
+    for (const [key, value] of Object.entries(data.request.headers)) {
       this.#headers[key.toLowerCase()] = value;
     }
   }
@@ -184,7 +209,7 @@ export class HTTPRequest extends BaseHTTPRequest {
     return this.#isNavigationRequest;
   }
 
-  override initiator(): Protocol.Network.Initiator {
+  override initiator(): Protocol.Network.Initiator | undefined {
     return this.#initiator;
   }
 
@@ -192,26 +217,6 @@ export class HTTPRequest extends BaseHTTPRequest {
     return this._redirectChain.slice();
   }
 
-  /**
-   * Access information about the request's failure.
-   *
-   * @remarks
-   *
-   * @example
-   *
-   * Example of logging all failed requests:
-   *
-   * ```ts
-   * page.on('requestfailed', request => {
-   *   console.log(request.url() + ' ' + request.failure().errorText);
-   * });
-   * ```
-   *
-   * @returns `null` unless the request failed. If the request fails this can
-   * return an object with `errorText` containing a human-readable error
-   * message, e.g. `net::ERR_FAILED`. It is not guaranteed that there will be
-   * failure text if the request fails.
-   */
   override failure(): {errorText: string} | null {
     if (!this._failureText) {
       return null;
@@ -221,35 +226,6 @@ export class HTTPRequest extends BaseHTTPRequest {
     };
   }
 
-  /**
-   * Continues request with optional request overrides.
-   *
-   * @remarks
-   *
-   * To use this, request
-   * interception should be enabled with {@link Page.setRequestInterception}.
-   *
-   * Exception is immediately thrown if the request interception is not enabled.
-   *
-   * @example
-   *
-   * ```ts
-   * await page.setRequestInterception(true);
-   * page.on('request', request => {
-   *   // Override headers
-   *   const headers = Object.assign({}, request.headers(), {
-   *     foo: 'bar', // set "foo" header
-   *     origin: undefined, // remove "origin" header
-   *   });
-   *   request.continue({headers});
-   * });
-   * ```
-   *
-   * @param overrides - optional overrides to apply to the request.
-   * @param priority - If provided, intercept is resolved using
-   * cooperative handling rules. Otherwise, intercept is resolved
-   * immediately.
-   */
   override async continue(
     overrides: ContinueRequestOverrides = {},
     priority?: number

@@ -16,6 +16,8 @@
 
 import {z} from 'zod';
 
+import {RecommendedExpectation} from './utils.js';
+
 export const zPlatform = z.enum(['win32', 'linux', 'darwin']);
 
 export type Platform = z.infer<typeof zPlatform>;
@@ -38,22 +40,28 @@ export type TestSuiteFile = z.infer<typeof zTestSuiteFile>;
 
 export type TestResult = 'PASS' | 'FAIL' | 'TIMEOUT' | 'SKIP';
 
-export type TestExpectation = {
+export interface TestExpectation {
   testIdPattern: string;
   platforms: NodeJS.Platform[];
   parameters: string[];
   expectations: TestResult[];
-};
+}
 
-export type MochaTestResult = {
+export interface MochaTestResult {
   fullTitle: string;
+  title: string;
   file: string;
   err?: {code: string};
-};
+}
 
-export type MochaResults = {
-  stats: unknown;
+export interface MochaResults {
+  stats: {tests: number};
   pending: MochaTestResult[];
   passes: MochaTestResult[];
   failures: MochaTestResult[];
-};
+  // Added by mochaRunner.
+  updates?: RecommendedExpectation[];
+  parameters?: string[];
+  platform?: string;
+  date?: string;
+}

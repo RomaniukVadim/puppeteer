@@ -17,9 +17,10 @@
 import path from 'path';
 
 import expect from 'expect';
+import {Frame} from 'puppeteer-core/internal/api/Frame.js';
 import {Page} from 'puppeteer-core/internal/api/Page.js';
 import {EventEmitter} from 'puppeteer-core/internal/common/EventEmitter.js';
-import {Frame} from 'puppeteer-core/internal/common/Frame.js';
+import {Deferred} from 'puppeteer-core/internal/util/Deferred.js';
 
 import {compare} from './golden-utils.js';
 
@@ -132,34 +133,27 @@ export const dumpFrames = (frame: Frame, indentation?: string): string[] => {
   return result;
 };
 
-export const waitEvent = (
+export const waitEvent = async <T = any>(
   emitter: EventEmitter,
   eventName: string,
-  predicate: (event: any) => boolean = () => {
+  predicate: (event: T) => boolean = () => {
     return true;
   }
-): Promise<any> => {
-  return new Promise(fulfill => {
-    emitter.on(eventName, function listener(event: any) {
-      if (!predicate(event)) {
-        return;
-      }
-      emitter.off(eventName, listener);
-      fulfill(event);
-    });
+): Promise<T> => {
+  const deferred = Deferred.create<T>({
+    timeout: 5000,
+    message: 'Waiting for test event timed out.',
   });
-};
-
-/**
- * @deprecated Use exports directly.
- */
-export default {
-  extendExpectWithToBeGolden,
-  waitEvent,
-  dumpFrames,
-  navigateFrame,
-  isFavicon,
-  attachFrame,
-  projectRoot,
-  detachFrame,
+  const handler = (event: T) => {
+    if (!predicate(event)) {
+      return;
+    }
+    deferred.resolve(event);
+  };
+  emitter.on(eventName, handler);
+  try {
+    return await deferred.valueOrThrow();
+  } finally {
+    emitter.off(eventName, handler);
+  }
 };

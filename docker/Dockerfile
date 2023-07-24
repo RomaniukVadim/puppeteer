@@ -1,7 +1,7 @@
 FROM node:18
 
 # Install latest chrome dev package and fonts to support major charsets (Chinese, Japanese, Arabic, Hebrew, Thai and a few others)
-# Note: this installs the necessary libs to make the bundled version of Chromium that Puppeteer
+# Note: this installs the necessary libs to make the bundled version of Chrome that Puppeteer
 # installs, work.
 RUN apt-get update \
     && apt-get install -y wget gnupg \
@@ -17,11 +17,11 @@ USER pptruser
 
 WORKDIR /home/pptruser
 
-COPY puppeteer-latest.tgz puppeteer-core-latest.tgz ./
+COPY puppeteer-browsers-latest.tgz puppeteer-latest.tgz puppeteer-core-latest.tgz ./
 
-# Install puppeteer and puppeteer-core into /home/pptruser/node_modules.
-RUN npm i ./puppeteer-core-latest.tgz ./puppeteer-latest.tgz \
-    && rm ./puppeteer-core-latest.tgz ./puppeteer-latest.tgz \
+# Install @puppeteer/browsers, puppeteer and puppeteer-core into /home/pptruser/node_modules.
+RUN npm i ./puppeteer-browsers-latest.tgz ./puppeteer-core-latest.tgz ./puppeteer-latest.tgz \
+    && rm ./puppeteer-browsers-latest.tgz ./puppeteer-core-latest.tgz ./puppeteer-latest.tgz \
     && (node -e "require('child_process').execSync(require('puppeteer').executablePath() + ' --credits', {stdio: 'inherit'})" > THIRD_PARTY_NOTICES)
 
 CMD ["google-chrome-stable"]

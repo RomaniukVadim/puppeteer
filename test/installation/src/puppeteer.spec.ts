@@ -15,33 +15,88 @@
  */
 
 import assert from 'assert';
+import {readdirSync} from 'fs';
 import {readdir} from 'fs/promises';
 import {join} from 'path';
 
-import {describeInstallation} from './describeInstallation.js';
+import {configureSandbox} from './sandbox.js';
 import {readAsset} from './util.js';
 
-describeInstallation(
-  '`puppeteer`',
-  {
-    dependencies: ['puppeteer-core', 'puppeteer'],
+describe('`puppeteer`', () => {
+  configureSandbox({
+    dependencies: ['@puppeteer/browsers', 'puppeteer-core', 'puppeteer'],
     env: cwd => {
       return {
         PUPPETEER_CACHE_DIR: join(cwd, '.cache', 'puppeteer'),
       };
     },
-  },
-  ({itEvaluates}) => {
-    itEvaluates('CommonJS', {commonjs: true}, async cwd => {
-      const files = await readdir(join(cwd, '.cache', 'puppeteer'));
-      assert.equal(files.length, 1);
-      assert.equal(files[0], 'chrome');
+  });
 
-      return readAsset('puppeteer-core', 'requires.cjs');
-    });
+  it('evaluates CommonJS', async function () {
+    const files = await readdir(join(this.sandbox, '.cache', 'puppeteer'));
+    assert.equal(files.length, 1);
+    assert.equal(files[0], 'chrome');
+    const script = await readAsset('puppeteer-core', 'requires.cjs');
+    await this.runScript(script, 'cjs');
+  });
 
-    itEvaluates('ES modules', async () => {
-      return readAsset('puppeteer-core', 'imports.js');
-    });
-  }
-);
+  it('evaluates ES modules', async function () {
+    const script = await readAsset('puppeteer-core', 'imports.js');
+    await this.runScript(script, 'mjs');
+  });
+});
+
+describe('`puppeteer` with PUPPETEER_DOWNLOAD_PATH', () => {
+  configureSandbox({
+    dependencies: ['@puppeteer/browsers', 'puppeteer-core', 'puppeteer'],
+    env: cwd => {
+      return {
+        PUPPETEER_DOWNLOAD_PATH: join(cwd, '.cache', 'puppeteer'),
+      };
+    },
+  });
+
+  it('evaluates', async function () {
+    const files = await readdir(join(this.sandbox, '.cache', 'puppeteer'));
+    assert.equal(files.length, 1);
+    assert.equal(files[0], 'chrome');
+
+    const script = await readAsset('puppeteer', 'basic.js');
+    await this.runScript(script, 'mjs');
+  });
+});
+
+describe('`puppeteer` clears cache', () => {
+  configureSandbox({
+    dependencies: ['@puppeteer/browsers', 'puppeteer-core', 'puppeteer'],
+    env: cwd => {
+      return {
+        PUPPETEER_CACHE_DIR: join(cwd, '.cache', 'puppeteer'),
+      };
+    },
+  });
+
+  it('evaluates', async function () {
+    assert.equal(
+      readdirSync(join(this.sandbox, '.cache', 'puppeteer', 'chrome')).length,
+      1
+    );
+
+    await this.runScript(
+      await readAsset('puppeteer', 'installCanary.js'),
+      'mjs'
+    );
+
+    assert.equal(
+      readdirSync(join(this.sandbox, '.cache', 'puppeteer', 'chrome')).length,
+      2
+    );
+
+    await this.runScript(await readAsset('puppeteer', 'trimCache.js'), 'mjs');
+
+    assert.equal(
+      readdirSync(join(this.sandbox, '.cache', 'puppeteer', 'chrome')).length,
+      1
+    );
+  });
+});

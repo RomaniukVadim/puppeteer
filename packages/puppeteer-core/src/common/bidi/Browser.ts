@@ -16,46 +16,124 @@
 
 import {ChildProcess} from 'child_process';
 
+import * as Bidi from 'chromium-bidi/lib/cjs/protocol/protocol.js';
+
 import {
   Browser as BrowserBase,
   BrowserCloseCallback,
   BrowserContextOptions,
+  BrowserEmittedEvents,
 } from '../../api/Browser.js';
 import {BrowserContext as BrowserContextBase} from '../../api/BrowserContext.js';
+import {Page} from '../../api/Page.js';
+import {Target} from '../../puppeteer-core.js';
+import {Viewport} from '../PuppeteerViewport.js';
 
 import {BrowserContext} from './BrowserContext.js';
 import {Connection} from './Connection.js';
+import {debugError} from './utils.js';
 
 /**
  * @internal
  */
 export class Browser extends BrowserBase {
-  /**
-   * @internal
-   */
+  static readonly subscribeModules: Bidi.Session.SubscriptionRequestEvent[] = [
+    'browsingContext',
+    'network',
+    'log',
+  ];
+  static readonly subscribeCdpEvents: Bidi.Cdp.EventNames[] = [
+    // Coverage
+    'cdp.Debugger.scriptParsed',
+    'cdp.CSS.styleSheetAdded',
+    'cdp.Runtime.executionContextsCleared',
+    // Tracing
+    'cdp.Tracing.tracingComplete',
+    // TODO: subscribe to all CDP events in the future.
+    'cdp.Network.requestWillBeSent',
+    'cdp.Debugger.scriptParsed',
+  ];
+
+  #browserName = '';
+  #browserVersion = '';
+
   static async create(opts: Options): Promise<Browser> {
+    let browserName = '';
+    let browserVersion = '';
+
     // TODO: await until the connection is established.
     try {
-      await opts.connection.send('session.new', {});
-    } catch {}
-    return new Browser(opts);
+      const {result} = await opts.connection.send('session.new', {
+        capabilities: {
+          alwaysMatch: {
+            acceptInsecureCerts: opts.ignoreHTTPSErrors,
+          },
+        },
+      });
+      browserName = result.capabilities.browserName ?? '';
+      browserVersion = result.capabilities.browserVersion ?? '';
+    } catch (err) {
+      // Chrome does not support session.new.
+      debugError(err);
+    }
+
+    await opts.connection.send('session.subscribe', {
+      events: browserName.toLocaleLowerCase().includes('firefox')
+        ? Browser.subscribeModules
+        : [...Browser.subscribeModules, ...Browser.subscribeCdpEvents],
+    });
+
+    return new Browser({
+      ...opts,
+      browserName,
+      browserVersion,
+    });
   }
 
   #process?: ChildProcess;
   #closeCallback?: BrowserCloseCallback;
   #connection: Connection;
+  #defaultViewport: Viewport | null;
+  #defaultContext: BrowserContext;
 
-  /**
-   * @internal
-   */
-  constructor(opts: Options) {
+  constructor(
+    opts: Options & {
+      browserName: string;
+      browserVersion: string;
+    }
+  ) {
     super();
     this.#process = opts.process;
     this.#closeCallback = opts.closeCallback;
     this.#connection = opts.connection;
+    this.#defaultViewport = opts.defaultViewport;
+    this.#browserName = opts.browserName;
+    this.#browserVersion = opts.browserVersion;
+
+    this.#process?.once('close', () => {
+      this.#connection.dispose();
+      this.emit(BrowserEmittedEvents.Disconnected);
+    });
+    this.#defaultContext = new BrowserContext(this, {
+      defaultViewport: this.#defaultViewport,
+      isDefault: true,
+    });
+  }
+
+  get connection(): Connection {
+    return this.#connection;
+  }
+
+  override wsEndpoint(): string {
+    return this.#connection.url;
   }
 
   override async close(): Promise<void> {
+    if (this.#connection.closed) {
+      return;
+    }
+    // TODO: implement browser.close.
+    // await this.#connection.send('browser.close', {});
     this.#connection.dispose();
     await this.#closeCallback?.call(null);
   }
@@ -71,7 +149,41 @@ export class Browser extends BrowserBase {
   override async createIncognitoBrowserContext(
     _options?: BrowserContextOptions
   ): Promise<BrowserContextBase> {
-    return new BrowserContext(this.#connection);
+    // TODO: implement incognito context https://github.com/w3c/webdriver-bidi/issues/289.
+    return new BrowserContext(this, {
+      defaultViewport: this.#defaultViewport,
+      isDefault: false,
+    });
+  }
+
+  override async version(): Promise<string> {
+    return `${this.#browserName}/${this.#browserVersion}`;
+  }
+
+  /**
+   * Returns an array of all open browser contexts. In a newly created browser, this will
+   * return a single instance of {@link BrowserContext}.
+   */
+  override browserContexts(): BrowserContext[] {
+    // TODO: implement incognito context https://github.com/w3c/webdriver-bidi/issues/289.
+    return [this.#defaultContext];
+  }
+
+  /**
+   * Returns the default browser context. The default browser context cannot be closed.
+   */
+  override defaultBrowserContext(): BrowserContext {
+    return this.#defaultContext;
+  }
+
+  override newPage(): Promise<Page> {
+    return this.#defaultContext.newPage();
+  }
+
+  override targets(): Target[] {
+    return this.browserContexts().flatMap(c => {
+      return c.targets();
+    });
   }
 }
 
@@ -79,4 +191,6 @@ interface Options {
   process?: ChildProcess;
   closeCallback?: BrowserCloseCallback;
   connection: Connection;
+  defaultViewport: Viewport | null;
+  ignoreHTTPSErrors?: boolean;
 }

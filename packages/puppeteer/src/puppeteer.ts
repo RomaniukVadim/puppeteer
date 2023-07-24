@@ -40,10 +40,6 @@ export const {
   /**
    * @public
    */
-  createBrowserFetcher,
-  /**
-   * @public
-   */
   defaultArgs,
   /**
    * @public
@@ -53,6 +49,10 @@ export const {
    * @public
    */
   launch,
+  /**
+   * @public
+   */
+  trimCache,
 } = puppeteer;
 
 export default puppeteer;

@@ -92,12 +92,6 @@ const config = {
         docs: {
           async sidebarItemsGenerator({defaultSidebarItemsGenerator, ...args}) {
             const sidebarItems = await defaultSidebarItemsGenerator(args);
-            const apiItem = sidebarItems.find(value => {
-              return value.type === 'doc' && value.label === 'API';
-            });
-            if (!apiItem) {
-              return sidebarItems;
-            }
 
             /** @type {typeof sidebarItems} */
             const apiSidebarItems = [];
@@ -112,41 +106,12 @@ const config = {
               }
             }
 
-            const order = [
-              // PuppeteerNode and Puppeteer go first as the entrypoints into
-              // the Puppeteer API.
-              'PuppeteerNode',
-              'Puppeteer',
-              'BrowserFetcher',
-              'Browser',
-              'BrowserContext',
-              'Page',
-              'WebWorker',
-              'Accessibility',
-              'Keyboard',
-              'Mouse',
-              'Touchscreen',
-              'Tracing',
-              'FileChooser',
-              'Dialog',
-              'ConsoleMessage',
-              'Frame',
-              'JSHandle',
-              'ElementHandle',
-              'HTTPRequest',
-              'HTTPResponse',
-              'SecurityDetails',
-              'Target',
-              'CDPSession',
-              'Coverage',
-              'TimeoutError',
-              'EventEmitter',
-            ];
-
             function addNamespace(namespace, target) {
               let items = categories.get(namespace);
               if (!items) {
-                throw new Error(`Namespace ${namespace} not found`);
+                throw new Error(
+                  `Namespace ${namespace} not found. Did you update the list of sidebar namespaces below?`
+                );
               }
               items.sort((a, b) => {
                 return a.label.localeCompare(b.label);
@@ -171,8 +136,74 @@ const config = {
               categories.delete(namespace);
             }
 
-            for (const namespace of order) {
-              addNamespace(namespace, apiSidebarItems);
+            if (args.item.dirName === 'browsers-api') {
+              const order = [
+                'launch',
+                'install',
+                'uninstall',
+                'canDownload',
+                'createProfile',
+                'computeExecutablePath',
+                'computeSystemExecutablePath',
+                'resolveBuildId',
+                'getInstalledBrowsers',
+                'detectBrowserPlatform',
+                'BrowserPlatform',
+                'Browser',
+                'CLI',
+              ];
+              const apiItem = sidebarItems.find(value => {
+                return value.type === 'doc' && value.label === 'API';
+              });
+              apiSidebarItems.push({
+                type: 'category',
+                label: 'API',
+                items: [],
+                link: apiItem
+                  ? {
+                      type: 'doc',
+                      id: apiItem.id,
+                    }
+                  : undefined,
+              });
+              const container = apiSidebarItems[apiSidebarItems.length - 1];
+              for (const namespace of order) {
+                addNamespace(namespace, container.items);
+              }
+            } else {
+              const order = [
+                // PuppeteerNode and Puppeteer go first as the entrypoints into
+                // the Puppeteer API.
+                'PuppeteerNode',
+                'Puppeteer',
+                'Browser',
+                'BrowserContext',
+                'Page',
+                'WebWorker',
+                'Accessibility',
+                'Keyboard',
+                'Mouse',
+                'Touchscreen',
+                'Tracing',
+                'FileChooser',
+                'Dialog',
+                'ConsoleMessage',
+                'Frame',
+                'JSHandle',
+                'ElementHandle',
+                'HTTPRequest',
+                'HTTPResponse',
+                'SecurityDetails',
+                'Target',
+                'CDPSession',
+                'Coverage',
+                'TimeoutError',
+                'EventEmitter',
+              ];
+
+              for (const namespace of order) {
+                addNamespace(namespace, apiSidebarItems);
+              }
             }
             const otherItems = [];
             apiSidebarItems.push({
@@ -186,6 +217,9 @@ const config = {
               return a.localeCompare(b);
             });
             for (const namespace of remaining) {
+              if (namespace === 'API') {
+                continue;
+              }
               addNamespace(namespace, otherItems);
             }
             return apiSidebarItems;
@@ -224,7 +258,12 @@ const config = {
             {
               type: 'docSidebar',
               sidebarId: 'api',
-              label: 'API',
+              label: 'Puppeteer API',
+            },
+            {
+              type: 'docSidebar',
+              sidebarId: 'browsersApi',
+              label: '@puppeteer/browsers API',
             },
           ].map(item => {
             return Object.assign(item, {position: 'left'});
@@ -244,9 +283,18 @@ const config = {
                   value: '<b>Archived versions</b>',
                 },
                 ...archivedVersions.map(version => {
+                  const parts = version.split('.').map(item => {
+                    return Number(item);
+                  });
+                  if (parts[0] <= 19 && parts[1] <= 2 && parts[2] <= 2) {
+                    return {
+                      label: version,
+                      href: `https://github.com/puppeteer/puppeteer/blob/v${version}/docs/api/index.md`,
+                    };
+                  }
                   return {
                     label: version,
-                    href: `https://github.com/puppeteer/puppeteer/blob/v${version}/docs/api/index.md`,
+                    href: `https://github.com/puppeteer/puppeteer/blob/puppeteer-v${version}/docs/api/index.md`,
                   };
                 }),
               ],

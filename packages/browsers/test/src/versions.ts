@@ -14,7 +14,9 @@
  * limitations under the License.
  */
 
-export const testChromeBuildId = '1083080';
+export const testChromeBuildId = '113.0.5672.0';
+export const testChromiumBuildId = '1083080';
 // TODO: We can add a Cron job to auto-update on change.
 // Firefox keeps only `latest` version of Nightly builds.
-export const testFirefoxBuildId = '112.0a1';
+export const testFirefoxBuildId = '117.0a1';
+export const testChromeDriverBuildId = '115.0.5763.0';

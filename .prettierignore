@@ -46,4 +46,9 @@ CHANGELOG.md
 package-lock.json
 test/assets/
 docs/api
+docs/browsers-api
 versioned_*/
+
+# Ng-schematics
+/packages/ng-schematics/files/
+/packages/ng-schematics/sandbox/

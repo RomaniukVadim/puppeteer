@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+import {randomUUID} from 'crypto';
 import fs from 'fs';
 import {spawn, SpawnOptions} from 'node:child_process';
 import os from 'os';
@@ -35,6 +36,8 @@ import {
   filterByParameters,
   getExpectationUpdates,
   printSuggestions,
+  RecommendedExpectation,
+  writeJSON,
 } from './utils.js';
 
 function getApplicableTestSuites(
@@ -77,6 +80,15 @@ async function main() {
   let statsFilename = '';
   if (statsFilenameIdx !== -1) {
     statsFilename = process.argv[statsFilenameIdx + 1] as string;
+    if (statsFilename.includes('INSERTID')) {
+      statsFilename = statsFilename.replace(/INSERTID/gi, randomUUID());
+    }
+  }
+
+  const minTestsIdx = process.argv.indexOf('--min-tests');
+  let minTests = 0;
+  if (minTestsIdx !== -1) {
+    minTests = Number(process.argv[minTestsIdx + 1]);
   }
 
   const platform = zPlatform.parse(os.platform());
@@ -97,7 +109,7 @@ async function main() {
   }
 
   let fail = false;
-  const recommendations = [];
+  const recommendations: RecommendedExpectation[] = [];
   try {
     for (const suite of applicableSuites) {
       const parameters = suite.parameters;
@@ -105,7 +117,7 @@ async function main() {
       const applicableExpectations = filterByParameters(
         filterByPlatform(expectations, platform),
         parameters
-      );
+      ).reverse();
 
       // Add more logging when the GitHub Action Debugging option is set
       // https://docs.github.com/en/actions/learn-github-actions/variables#default-environment-variables
@@ -113,6 +125,7 @@ async function main() {
         ? {
             DEBUG: 'puppeteer:*',
             EXTRA_LAUNCH_OPTIONS: JSON.stringify({
+              dumpio: true,
               extraPrefsFirefox: {
                 'remote.log.level': 'Trace',
               },
@@ -200,19 +213,30 @@ async function main() {
       console.log('Finished', JSON.stringify(parameters));
       try {
         const results = readJSON(tmpFilename) as MochaResults;
-        const recommendation = getExpectationUpdates(
-          results,
-          applicableExpectations,
-          {
-            platforms: [os.platform()],
-            parameters,
-          }
-        );
-        if (recommendation.length > 0) {
+        const updates = getExpectationUpdates(results, applicableExpectations, {
+          platforms: [os.platform()],
+          parameters,
+        });
+        const totalTests = results.stats.tests;
+        results.parameters = parameters;
+        results.platform = platform;
+        results.date = new Date().toISOString();
+        if (updates.length > 0) {
           fail = true;
-          recommendations.push(...recommendation);
+          recommendations.push(...updates);
+          results.updates = updates;
+          writeJSON(tmpFilename, results);
         } else {
+          if (totalTests < minTests) {
+            fail = true;
+            console.log(
+              `Test run matches expectations but the number of discovered tests is too low (expected: ${minTests}, actual: ${totalTests}).`
+            );
+            writeJSON(tmpFilename, results);
+            continue;
+          }
           console.log('Test run matches expectations');
+          writeJSON(tmpFilename, results);
           continue;
         }
       } catch (err) {

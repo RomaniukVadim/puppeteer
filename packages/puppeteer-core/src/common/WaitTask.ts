@@ -15,13 +15,14 @@
  */
 
 import {ElementHandle} from '../api/ElementHandle.js';
+import {Realm} from '../api/Frame.js';
 import {JSHandle} from '../api/JSHandle.js';
 import type {Poller} from '../injected/Poller.js';
-import {createDeferredPromise} from '../util/DeferredPromise.js';
+import {Deferred} from '../util/Deferred.js';
+import {isErrorLike} from '../util/ErrorLike.js';
 import {stringifyFunction} from '../util/Function.js';
 
 import {TimeoutError} from './Errors.js';
-import {IsolatedWorld} from './IsolatedWorld.js';
 import {LazyArg} from './LazyArg.js';
 import {HandleFor} from './types.js';
 
@@ -32,13 +33,14 @@ export interface WaitTaskOptions {
   polling: 'raf' | 'mutation' | number;
   root?: ElementHandle<Node>;
   timeout: number;
+  signal?: AbortSignal;
 }
 
 /**
  * @internal
  */
 export class WaitTask<T = unknown> {
-  #world: IsolatedWorld;
+  #world: Realm;
   #polling: 'raf' | 'mutation' | number;
   #root?: ElementHandle<Node>;
 
@@ -47,12 +49,13 @@ export class WaitTask<T = unknown> {
 
   #timeout?: NodeJS.Timeout;
 
-  #result = createDeferredPromise<HandleFor<T>>();
+  #result = Deferred.create<HandleFor<T>>();
 
   #poller?: JSHandle<Poller<T>>;
+  #signal?: AbortSignal;
 
   constructor(
-    world: IsolatedWorld,
+    world: Realm,
     options: WaitTaskOptions,
     fn: ((...args: unknown[]) => Promise<T>) | string,
     ...args: unknown[]
@@ -60,6 +63,16 @@ export class WaitTask<T = unknown> {
     this.#world = world;
     this.#polling = options.polling;
     this.#root = options.root;
+    this.#signal = options.signal;
+    this.#signal?.addEventListener(
+      'abort',
+      () => {
+        void this.terminate(this.#signal?.reason);
+      },
+      {
+        once: true,
+      }
+    );
 
     switch (typeof fn) {
       case 'string':
@@ -75,17 +88,17 @@ export class WaitTask<T = unknown> {
 
     if (options.timeout) {
       this.#timeout = setTimeout(() => {
-        this.terminate(
+        void this.terminate(
           new TimeoutError(`Waiting failed: ${options.timeout}ms exceeded`)
         );
       }, options.timeout);
     }
 
-    this.rerun();
+    void this.rerun();
   }
 
   get result(): Promise<HandleFor<T>> {
-    return this.#result;
+    return this.#result.valueOrThrow();
   }
 
   async rerun(): Promise<void> {
@@ -141,7 +154,7 @@ export class WaitTask<T = unknown> {
       }
 
       await this.#poller.evaluate(poller => {
-        poller.start();
+        void poller.start();
       });
 
       const result = await this.#poller.evaluateHandle(poller => {
@@ -158,7 +171,7 @@ export class WaitTask<T = unknown> {
     }
   }
 
-  async terminate(error?: unknown): Promise<void> {
+  async terminate(error?: Error): Promise<void> {
     this.#world.taskManager.delete(this);
 
     if (this.#timeout) {
@@ -187,8 +200,8 @@ export class WaitTask<T = unknown> {
   /**
    * Not all errors lead to termination. They usually imply we need to rerun the task.
    */
-  getBadError(error: unknown): unknown {
-    if (error instanceof Error) {
+  getBadError(error: unknown): Error | undefined {
+    if (isErrorLike(error)) {
       // When frame is detached the task should have been terminated by the IsolatedWorld.
       // This can fail if we were adding this task while the frame was detached,
       // so we terminate here instead.
@@ -211,9 +224,13 @@ export class WaitTask<T = unknown> {
       if (error.message.includes('Cannot find context with specified id')) {
         return;
       }
+
+      return error;
     }
 
-    return error;
+    return new Error('WaitTask failed with an error', {
+      cause: error,
+    });
   }
 }
 
@@ -233,7 +250,7 @@ export class TaskManager {
 
   terminateAll(error?: Error): void {
     for (const task of this.#tasks) {
-      task.terminate(error);
+      void task.terminate(error);
     }
     this.#tasks.clear();
   }

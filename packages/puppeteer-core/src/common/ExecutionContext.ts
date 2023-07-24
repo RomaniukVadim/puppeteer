@@ -32,17 +32,19 @@ import {LazyArg} from './LazyArg.js';
 import {scriptInjector} from './ScriptInjector.js';
 import {EvaluateFunc, HandleFor} from './types.js';
 import {
+  PuppeteerURL,
+  createEvaluationError,
   createJSHandle,
-  getExceptionMessage,
+  getSourcePuppeteerURLIfAvailable,
   isString,
   valueFromRemoteObject,
 } from './util.js';
 
-/**
- * @public
- */
-export const EVALUATION_SCRIPT_URL = 'pptr://__puppeteer_evaluation_script__';
 const SOURCE_URL_REGEX = /^[\040\t]*\/\/[@#] sourceURL=\s*(\S*?)\s*$/m;
+
+const getSourceUrlComment = (url: string) => {
+  return `//# sourceURL=${url}`;
+};
 
 /**
  * Represents a context for JavaScript execution.
@@ -85,15 +87,12 @@ export class ExecutionContext {
     }
   }
 
+  #bindingsInstalled = false;
   #puppeteerUtil?: Promise<JSHandle<PuppeteerUtil>>;
   get puppeteerUtil(): Promise<JSHandle<PuppeteerUtil>> {
-    scriptInjector.inject(script => {
-      if (this.#puppeteerUtil) {
-        this.#puppeteerUtil.then(handle => {
-          handle.dispose();
-        });
-      }
-      this.#puppeteerUtil = Promise.all([
+    let promise = Promise.resolve() as Promise<unknown>;
+    if (!this.#bindingsInstalled) {
+      promise = Promise.all([
         this.#installGlobalBinding(
           new Binding(
             '__ariaQuerySelector',
@@ -106,12 +105,24 @@ export class ExecutionContext {
             selector: string
           ): Promise<JSHandle<Node[]>> => {
             const results = ARIAQueryHandler.queryAll(element, selector);
-            return element.executionContext().evaluateHandle((...elements) => {
-              return elements;
-            }, ...(await AsyncIterableUtil.collect(results)));
+            return element.executionContext().evaluateHandle(
+              (...elements) => {
+                return elements;
+              },
+              ...(await AsyncIterableUtil.collect(results))
+            );
           }) as (...args: unknown[]) => unknown)
         ),
-      ]).then(() => {
+      ]);
+      this.#bindingsInstalled = true;
+    }
+    scriptInjector.inject(script => {
+      if (this.#puppeteerUtil) {
+        void this.#puppeteerUtil.then(handle => {
+          void handle.dispose();
+        });
+      }
+      this.#puppeteerUtil = promise.then(() => {
         return this.evaluateHandle(script) as Promise<JSHandle<PuppeteerUtil>>;
       });
     }, !this.#puppeteerUtil);
@@ -173,7 +184,7 @@ export class ExecutionContext {
    */
   async evaluate<
     Params extends unknown[],
-    Func extends EvaluateFunc<Params> = EvaluateFunc<Params>
+    Func extends EvaluateFunc<Params> = EvaluateFunc<Params>,
   >(
     pageFunction: Func | string,
     ...args: Params
@@ -232,7 +243,7 @@ export class ExecutionContext {
    */
   async evaluateHandle<
     Params extends unknown[],
-    Func extends EvaluateFunc<Params> = EvaluateFunc<Params>
+    Func extends EvaluateFunc<Params> = EvaluateFunc<Params>,
   >(
     pageFunction: Func | string,
     ...args: Params
@@ -242,7 +253,7 @@ export class ExecutionContext {
 
   async #evaluate<
     Params extends unknown[],
-    Func extends EvaluateFunc<Params> = EvaluateFunc<Params>
+    Func extends EvaluateFunc<Params> = EvaluateFunc<Params>,
   >(
     returnByValue: true,
     pageFunction: Func | string,
@@ -250,7 +261,7 @@ export class ExecutionContext {
   ): Promise<Awaited<ReturnType<Func>>>;
   async #evaluate<
     Params extends unknown[],
-    Func extends EvaluateFunc<Params> = EvaluateFunc<Params>
+    Func extends EvaluateFunc<Params> = EvaluateFunc<Params>,
   >(
     returnByValue: false,
     pageFunction: Func | string,
@@ -258,20 +269,23 @@ export class ExecutionContext {
   ): Promise<HandleFor<Awaited<ReturnType<Func>>>>;
   async #evaluate<
     Params extends unknown[],
-    Func extends EvaluateFunc<Params> = EvaluateFunc<Params>
+    Func extends EvaluateFunc<Params> = EvaluateFunc<Params>,
   >(
     returnByValue: boolean,
     pageFunction: Func | string,
     ...args: Params
   ): Promise<HandleFor<Awaited<ReturnType<Func>>> | Awaited<ReturnType<Func>>> {
-    const suffix = `//# sourceURL=${EVALUATION_SCRIPT_URL}`;
+    const sourceUrlComment = getSourceUrlComment(
+      getSourcePuppeteerURLIfAvailable(pageFunction)?.toString() ??
+        PuppeteerURL.INTERNAL_URL
+    );
 
     if (isString(pageFunction)) {
       const contextId = this._contextId;
       const expression = pageFunction;
       const expressionWithSourceUrl = SOURCE_URL_REGEX.test(expression)
         ? expression
-        : expression + '\n' + suffix;
+        : `${expression}\n${sourceUrlComment}\n`;
 
       const {exceptionDetails, result: remoteObject} = await this._client
         .send('Runtime.evaluate', {
@@ -284,9 +298,7 @@ export class ExecutionContext {
         .catch(rewriteError);
 
       if (exceptionDetails) {
-        throw new Error(
-          'Evaluation failed: ' + getExceptionMessage(exceptionDetails)
-        );
+        throw createEvaluationError(exceptionDetails);
       }
 
       return returnByValue
@@ -294,10 +306,16 @@ export class ExecutionContext {
         : createJSHandle(this, remoteObject);
     }
 
+    const functionDeclaration = stringifyFunction(pageFunction);
+    const functionDeclarationWithSourceUrl = SOURCE_URL_REGEX.test(
+      functionDeclaration
+    )
+      ? functionDeclaration
+      : `${functionDeclaration}\n${sourceUrlComment}\n`;
     let callFunctionOnPromise;
     try {
       callFunctionOnPromise = this._client.send('Runtime.callFunctionOn', {
-        functionDeclaration: `${stringifyFunction(pageFunction)}\n${suffix}\n`,
+        functionDeclaration: functionDeclarationWithSourceUrl,
         executionContextId: this._contextId,
         arguments: await Promise.all(args.map(convertArgument.bind(this))),
         returnByValue,
@@ -316,9 +334,7 @@ export class ExecutionContext {
     const {exceptionDetails, result: remoteObject} =
       await callFunctionOnPromise.catch(rewriteError);
     if (exceptionDetails) {
-      throw new Error(
-        'Evaluation failed: ' + getExceptionMessage(exceptionDetails)
-      );
+      throw createEvaluationError(exceptionDetails);
     }
     return returnByValue
       ? valueFromRemoteObject(remoteObject)

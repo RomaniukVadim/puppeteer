@@ -18,15 +18,31 @@ export {
   launch,
   computeExecutablePath,
   computeSystemExecutablePath,
+  TimeoutError,
+  LaunchOptions,
+  ComputeExecutablePathOptions as Options,
+  SystemOptions,
   CDP_WEBSOCKET_ENDPOINT_REGEX,
   WEBDRIVER_BIDI_WEBSOCKET_ENDPOINT_REGEX,
-} from './launcher.js';
-export {fetch, canFetch} from './fetch.js';
+  Process,
+} from './launch.js';
+export {
+  install,
+  getInstalledBrowsers,
+  canDownload,
+  uninstall,
+  InstallOptions,
+  GetInstalledBrowsersOptions,
+  UninstallOptions,
+} from './install.js';
 export {detectBrowserPlatform} from './detectPlatform.js';
 export {
+  resolveBuildId,
   Browser,
   BrowserPlatform,
   ChromeReleaseChannel,
+  createProfile,
+  ProfileOptions,
 } from './browser-data/browser-data.js';
-export {CLI} from './CLI.js';
-export {Cache} from './Cache.js';
+export {CLI, makeProgressCallback} from './CLI.js';
+export {Cache, InstalledBrowser} from './Cache.js';

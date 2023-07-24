@@ -18,11 +18,13 @@ import {Protocol} from 'devtools-protocol';
 import {ProtocolMapping} from 'devtools-protocol/types/protocol-mapping.js';
 
 import {assert} from '../util/assert.js';
+import {Deferred} from '../util/Deferred.js';
 
 import {ConnectionTransport} from './ConnectionTransport.js';
 import {debug} from './Debug.js';
-import {ProtocolError} from './Errors.js';
+import {TargetCloseError, ProtocolError} from './Errors.js';
 import {EventEmitter} from './EventEmitter.js';
+import {debugError} from './util.js';
 
 const debugProtocolSend = debug('puppeteer:protocol:SEND ►');
 const debugProtocolReceive = debug('puppeteer:protocol:RECV ◀');
@@ -31,16 +33,6 @@ const debugProtocolReceive = debug('puppeteer:protocol:RECV ◀');
  * @public
  */
 export {ConnectionTransport, ProtocolMapping};
-
-/**
- * @public
- */
-export interface ConnectionCallback {
-  resolve(args: unknown): void;
-  reject(args: unknown): void;
-  error: ProtocolError;
-  method: string;
-}
 
 /**
  * Internal events that the Connection class emits.
@@ -52,22 +44,174 @@ export const ConnectionEmittedEvents = {
 } as const;
 
 /**
+ * @internal
+ */
+type GetIdFn = () => number;
+
+/**
+ * @internal
+ */
+function createIncrementalIdGenerator(): GetIdFn {
+  let id = 0;
+  return (): number => {
+    return ++id;
+  };
+}
+
+/**
+ * @internal
+ */
+export class Callback {
+  #id: number;
+  #error = new ProtocolError();
+  #deferred = Deferred.create<unknown>();
+  #timer?: ReturnType<typeof setTimeout>;
+  #label: string;
+
+  constructor(id: number, label: string, timeout?: number) {
+    this.#id = id;
+    this.#label = label;
+    if (timeout) {
+      this.#timer = setTimeout(() => {
+        this.#deferred.reject(
+          rewriteError(
+            this.#error,
+            `${label} timed out. Increase the 'protocolTimeout' setting in launch/connect calls for a higher timeout if needed.`
+          )
+        );
+      }, timeout);
+    }
+  }
+
+  resolve(value: unknown): void {
+    clearTimeout(this.#timer);
+    this.#deferred.resolve(value);
+  }
+
+  reject(error: Error): void {
+    clearTimeout(this.#timer);
+    this.#deferred.reject(error);
+  }
+
+  get id(): number {
+    return this.#id;
+  }
+
+  get promise(): Deferred<unknown> {
+    return this.#deferred;
+  }
+
+  get error(): ProtocolError {
+    return this.#error;
+  }
+
+  get label(): string {
+    return this.#label;
+  }
+}
+
+/**
+ * Manages callbacks and their IDs for the protocol request/response communication.
+ *
+ * @internal
+ */
+export class CallbackRegistry {
+  #callbacks = new Map<number, Callback>();
+  #idGenerator = createIncrementalIdGenerator();
+
+  create(
+    label: string,
+    timeout: number | undefined,
+    request: (id: number) => void
+  ): Promise<unknown> {
+    const callback = new Callback(this.#idGenerator(), label, timeout);
+    this.#callbacks.set(callback.id, callback);
+    try {
+      request(callback.id);
+    } catch (error) {
+      // We still throw sync errors synchronously and clean up the scheduled
+      // callback.
+      callback.promise
+        .valueOrThrow()
+        .catch(debugError)
+        .finally(() => {
+          this.#callbacks.delete(callback.id);
+        });
+      callback.reject(error as Error);
+      throw error;
+    }
+    // Must only have sync code up until here.
+    return callback.promise.valueOrThrow().finally(() => {
+      this.#callbacks.delete(callback.id);
+    });
+  }
+
+  reject(id: number, message: string, originalMessage?: string): void {
+    const callback = this.#callbacks.get(id);
+    if (!callback) {
+      return;
+    }
+    this._reject(callback, message, originalMessage);
+  }
+
+  _reject(
+    callback: Callback,
+    errorMessage: string | ProtocolError,
+    originalMessage?: string
+  ): void {
+    const isError = errorMessage instanceof ProtocolError;
+    const message = isError ? errorMessage.message : errorMessage;
+    const error = isError ? errorMessage : callback.error;
+
+    callback.reject(
+      rewriteError(
+        error,
+        `Protocol error (${callback.label}): ${message}`,
+        originalMessage
+      )
+    );
+  }
+
+  resolve(id: number, value: unknown): void {
+    const callback = this.#callbacks.get(id);
+    if (!callback) {
+      return;
+    }
+    callback.resolve(value);
+  }
+
+  clear(): void {
+    for (const callback of this.#callbacks.values()) {
+      // TODO: probably we can accept error messages as params.
+      this._reject(callback, new TargetCloseError('Target closed'));
+    }
+    this.#callbacks.clear();
+  }
+}
+
+/**
  * @public
  */
 export class Connection extends EventEmitter {
   #url: string;
   #transport: ConnectionTransport;
   #delay: number;
-  #lastId = 0;
-  #sessions: Map<string, CDPSessionImpl> = new Map();
+  #timeout: number;
+  #sessions = new Map<string, CDPSessionImpl>();
   #closed = false;
-  #callbacks: Map<number, ConnectionCallback> = new Map();
   #manuallyAttached = new Set<string>();
+  #callbacks = new CallbackRegistry();
 
-  constructor(url: string, transport: ConnectionTransport, delay = 0) {
+  constructor(
+    url: string,
+    transport: ConnectionTransport,
+    delay = 0,
+    timeout?: number
+  ) {
     super();
     this.#url = url;
     this.#delay = delay;
+    this.#timeout = timeout ?? 180_000;
 
     this.#transport = transport;
     this.#transport.onmessage = this.onMessage.bind(this);
@@ -76,6 +220,10 @@ export class Connection extends EventEmitter {
 
   static fromSession(session: CDPSession): Connection | undefined {
     return session.connection();
+  }
+
+  get timeout(): number {
+    return this.#timeout;
   }
 
   /**
@@ -115,26 +263,35 @@ export class Connection extends EventEmitter {
     // type-inference.
     // So now we check if there are any params or not and deal with them accordingly.
     const params = paramArgs.length ? paramArgs[0] : undefined;
-    const id = this._rawSend({method, params});
-    return new Promise((resolve, reject) => {
-      this.#callbacks.set(id, {
-        resolve,
-        reject,
-        error: new ProtocolError(),
-        method,
-      });
-    });
+    return this._rawSend(this.#callbacks, method, params);
   }
 
   /**
    * @internal
    */
-  _rawSend(message: Record<string, unknown>): number {
-    const id = ++this.#lastId;
-    const stringifiedMessage = JSON.stringify(Object.assign({}, message, {id}));
-    debugProtocolSend(stringifiedMessage);
-    this.#transport.send(stringifiedMessage);
-    return id;
+  _rawSend<T extends keyof ProtocolMapping.Commands>(
+    callbacks: CallbackRegistry,
+    method: T,
+    params: ProtocolMapping.Commands[T]['paramsType'][0],
+    sessionId?: string
+  ): Promise<ProtocolMapping.Commands[T]['returnType']> {
+    return callbacks.create(method, this.#timeout, id => {
+      const stringifiedMessage = JSON.stringify({
+        method,
+        params,
+        id,
+        sessionId,
+      });
+      debugProtocolSend(stringifiedMessage);
+      this.#transport.send(stringifiedMessage);
+    }) as Promise<ProtocolMapping.Commands[T]['returnType']>;
+  }
+
+  /**
+   * @internal
+   */
+  async closeBrowser(): Promise<void> {
+    await this.send('Browser.close');
   }
 
   /**
@@ -179,17 +336,14 @@ export class Connection extends EventEmitter {
         session._onMessage(object);
       }
     } else if (object.id) {
-      const callback = this.#callbacks.get(object.id);
-      // Callbacks could be all rejected if someone has called `.dispose()`.
-      if (callback) {
-        this.#callbacks.delete(object.id);
-        if (object.error) {
-          callback.reject(
-            createProtocolError(callback.error, callback.method, object)
-          );
-        } else {
-          callback.resolve(object.result);
-        }
+      if (object.error) {
+        this.#callbacks.reject(
+          object.id,
+          createProtocolErrorMessage(object),
+          object.error.message
+        );
+      } else {
+        this.#callbacks.resolve(object.id, object.result);
       }
     } else {
       this.emit(object.method, object.params);
@@ -203,14 +357,6 @@ export class Connection extends EventEmitter {
     this.#closed = true;
     this.#transport.onmessage = undefined;
     this.#transport.onclose = undefined;
-    for (const callback of this.#callbacks.values()) {
-      callback.reject(
-        rewriteError(
-          callback.error,
-          `Protocol error (${callback.method}): Target closed.`
-        )
-      );
-    }
     this.#callbacks.clear();
     for (const session of this.#sessions.values()) {
       session._onClosed();
@@ -265,7 +411,7 @@ export class Connection extends EventEmitter {
 }
 
 /**
- * @public
+ * @internal
  */
 export interface CDPSessionOnMessageObject {
   id?: number;
@@ -356,7 +502,7 @@ export class CDPSession extends EventEmitter {
 export class CDPSessionImpl extends CDPSession {
   #sessionId: string;
   #targetType: string;
-  #callbacks: Map<number, ConnectionCallback> = new Map();
+  #callbacks = new CallbackRegistry();
   #connection?: Connection;
 
   /**
@@ -379,46 +525,36 @@ export class CDPSessionImpl extends CDPSession {
   ): Promise<ProtocolMapping.Commands[T]['returnType']> {
     if (!this.#connection) {
       return Promise.reject(
-        new Error(
+        new TargetCloseError(
           `Protocol error (${method}): Session closed. Most likely the ${
             this.#targetType
           } has been closed.`
         )
       );
     }
-
     // See the comment in Connection#send explaining why we do this.
     const params = paramArgs.length ? paramArgs[0] : undefined;
-
-    const id = this.#connection._rawSend({
-      sessionId: this.#sessionId,
+    return this.#connection._rawSend(
+      this.#callbacks,
       method,
       params,
-    });
-
-    return new Promise((resolve, reject) => {
-      this.#callbacks.set(id, {
-        resolve,
-        reject,
-        error: new ProtocolError(),
-        method,
-      });
-    });
+      this.#sessionId
+    );
   }
 
   /**
    * @internal
    */
   _onMessage(object: CDPSessionOnMessageObject): void {
-    const callback = object.id ? this.#callbacks.get(object.id) : undefined;
-    if (object.id && callback) {
-      this.#callbacks.delete(object.id);
+    if (object.id) {
       if (object.error) {
-        callback.reject(
-          createProtocolError(callback.error, callback.method, object)
+        this.#callbacks.reject(
+          object.id,
+          createProtocolErrorMessage(object),
+          object.error.message
         );
       } else {
-        callback.resolve(object.result);
+        this.#callbacks.resolve(object.id, object.result);
       }
     } else {
       assert(!object.id);
@@ -447,14 +583,6 @@ export class CDPSessionImpl extends CDPSession {
    * @internal
    */
   _onClosed(): void {
-    for (const callback of this.#callbacks.values()) {
-      callback.reject(
-        rewriteError(
-          callback.error,
-          `Protocol error (${callback.method}): Target closed.`
-        )
-      );
-    }
     this.#callbacks.clear();
     this.#connection = undefined;
     this.emit(CDPSessionEmittedEvents.Disconnected);
@@ -468,16 +596,20 @@ export class CDPSessionImpl extends CDPSession {
   }
 }
 
-function createProtocolError(
-  error: ProtocolError,
-  method: string,
-  object: {error: {message: string; data: any; code: number}}
-): Error {
-  let message = `Protocol error (${method}): ${object.error.message}`;
-  if ('data' in object.error) {
+function createProtocolErrorMessage(object: {
+  error: {message: string; data: any; code: number};
+}): string {
+  let message = `${object.error.message}`;
+  // TODO: remove the type checks when we stop connecting to BiDi with a CDP
+  // client.
+  if (
+    object.error &&
+    typeof object.error === 'object' &&
+    'data' in object.error
+  ) {
     message += ` ${object.error.data}`;
   }
-  return rewriteError(error, message, object.error.message);
+  return message;
 }
 
 function rewriteError(
@@ -493,9 +625,6 @@ function rewriteError(
 /**
  * @internal
  */
-export function isTargetClosedError(err: Error): boolean {
-  return (
-    err.message.includes('Target closed') ||
-    err.message.includes('Session closed')
-  );
+export function isTargetClosedError(error: Error): boolean {
+  return error instanceof TargetCloseError;
 }
